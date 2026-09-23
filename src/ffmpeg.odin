@@ -347,7 +347,9 @@ Decoder :: struct {
 	eof:         bool,
 }
 
-decoder_command :: proc(tools: Tools, src: Probe, start: f64, allocator := context.allocator) -> []string {
+// decoder_command decodes src from start to raw frames of pix_fmt (rgb24 for
+// compositing, yuv420p to read the luma of our own encodes untouched).
+decoder_command :: proc(tools: Tools, src: Probe, start: f64, allocator := context.allocator, pix_fmt := "rgb24", frames := 0) -> []string {
 	cmd := make([dynamic]string, allocator)
 	append(&cmd, tools.ffmpeg, "-nostdin", "-v", "error")
 	if start > 0 && !src.still {
@@ -356,7 +358,10 @@ decoder_command :: proc(tools: Tools, src: Probe, start: f64, allocator := conte
 	append(&cmd, "-i", src.path, "-an", "-sn", "-dn")
 	if src.still {
 		append(&cmd, "-frames:v", "1")
-	} else if src.vfr {
+	} else if frames > 0 {
+		append(&cmd, "-frames:v", fmt.aprintf("%d", frames, allocator = allocator))
+	}
+	if !src.still && src.vfr {
 		append(&cmd, "-fps_mode", "cfr", "-r", fmt.aprintf("%d/%d", src.avg_fps.num, src.avg_fps.den, allocator = allocator))
 	}
 	// ffmpeg's default yuv→rgb path truncates: half a level darker on
@@ -364,15 +369,24 @@ decoder_command :: proc(tools: Tools, src: Probe, start: f64, allocator := conte
 	// of the decoder's time and remove the bias. An output option: before
 	// -i it is silently ignored.
 	append(&cmd, "-sws_flags", "accurate_rnd+full_chroma_int")
-	append(&cmd, "-f", "rawvideo", "-pix_fmt", "rgb24", "-")
+	append(&cmd, "-f", "rawvideo", "-pix_fmt", pix_fmt, "-")
 	return cmd[:]
 }
 
-decoder_open :: proc(tools: Tools, src: Probe, start: f64, log_path: string) -> (d: Decoder, err: Err) {
+decoder_open :: proc(tools: Tools, src: Probe, start: f64, log_path: string, pix_fmt := "rgb24", frames := 0) -> (d: Decoder, err: Err) {
 	d.src = src
 	d.start = start
-	d.frame_bytes = src.width * src.height * 3
-	cmd := decoder_command(tools, src, start, context.temp_allocator)
+	switch pix_fmt {
+	case "rgb24":
+		d.frame_bytes = src.width * src.height * 3
+	case "yuv420p":
+		d.frame_bytes = yuv_frame_size(src.width, src.height)
+	case "gray":
+		d.frame_bytes = src.width * src.height
+	case:
+		return d, fmt.aprintf("decoder: unsupported pixel format %s", pix_fmt)
+	}
+	cmd := decoder_command(tools, src, start, context.temp_allocator, pix_fmt, frames)
 	d.child = start_child(cmd, log_path, true) or_return
 	return d, nil
 }

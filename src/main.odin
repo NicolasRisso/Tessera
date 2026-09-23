@@ -7,6 +7,7 @@ package tessera
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import "core:time"
 
@@ -68,6 +69,8 @@ run_main :: proc(args: []string) -> int {
 		return execute_job(&job)
 	case "run":
 		return cmd_run(rest)
+	case "ssim":
+		return cmd_ssim(rest)
 	}
 	fmt.eprintf("tessera: unknown command %q\n\n", cmd)
 	fmt.eprint(USAGE)
@@ -91,6 +94,9 @@ print_command_help :: proc(cmd: string) -> int {
 		return EXIT_OK
 	case "run":
 		fmt.print(RUN_USAGE)
+		return EXIT_OK
+	case "ssim":
+		fmt.print(SSIM_USAGE)
 		return EXIT_OK
 	case "version", "help":
 		fmt.print(USAGE)
@@ -348,4 +354,88 @@ cmd_run :: proc(args: []string) -> int {
 	}
 	job.dry_run = job.dry_run || dry
 	return execute_job(&job)
+}
+
+SSIM_USAGE :: `usage: tessera ssim <a> <b> [--frames N] [--threads N] [--ffmpeg PATH]
+
+SSIM between two videos of the same size, on the luma plane, frame by frame
+from the start (11x11 Gaussian window). Prints the mean and the worst frame.
+`
+
+cmd_ssim :: proc(args: []string) -> int {
+	paths := make([dynamic]string, context.temp_allocator)
+	frames, threads := 0, 0
+	ffmpeg := ""
+	for i := 0; i < len(args); i += 1 {
+		a := args[i]
+		switch a {
+		case "--frames", "--threads", "--ffmpeg":
+			if i + 1 >= len(args) {
+				errorf("%s needs a value", a)
+				return EXIT_USAGE
+			}
+			i += 1
+			if a == "--ffmpeg" {
+				ffmpeg = args[i]
+				continue
+			}
+			n, ok := strconv.parse_int(args[i])
+			if !ok || n < 1 {
+				errorf("%s: %q is not a positive whole number", a, args[i])
+				return EXIT_USAGE
+			}
+			if a == "--frames" {
+				frames = n
+			} else {
+				threads = n
+			}
+		case:
+			if len(a) > 1 && a[0] == '-' {
+				errorf("ssim: unknown option %q", a)
+				return EXIT_USAGE
+			}
+			append(&paths, a)
+		}
+	}
+	if len(paths) != 2 {
+		fmt.eprint(SSIM_USAGE)
+		return EXIT_USAGE
+	}
+	tools, terr := find_tools(ffmpeg)
+	if terr != nil {
+		errorf("%s", terr.?)
+		return EXIT_RUNTIME
+	}
+	pa, aerr := probe(tools, paths[0])
+	if aerr != nil {
+		errorf("%s", aerr.?)
+		return EXIT_RUNTIME
+	}
+	pb, berr := probe(tools, paths[1])
+	if berr != nil {
+		errorf("%s", berr.?)
+		return EXIT_RUNTIME
+	}
+	tmp, derr := os.make_directory_temp("", "tessera-*", context.allocator)
+	if derr != nil {
+		errorf("cannot create a temporary directory: %v", derr)
+		return EXIT_RUNTIME
+	}
+	defer os.remove_all(tmp)
+	w: Workers
+	workers_init(&w, threads if threads > 0 else default_threads())
+	defer workers_destroy(&w)
+	res, err := ssim_compare(tools, pa, 0, pb, 0, frames, &w, tmp)
+	if err != nil {
+		errorf("%s", err.?)
+		return EXIT_RUNTIME
+	}
+	worst := 0
+	for s, i in res.frames {
+		if s < res.frames[worst] {
+			worst = i
+		}
+	}
+	fmt.printf("ssim mean %.5f, min %.5f (frame %d), %d frames, luma\n", res.mean, res.min, worst, len(res.frames))
+	return EXIT_OK
 }

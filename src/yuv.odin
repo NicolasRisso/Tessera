@@ -49,9 +49,10 @@ coeffs_709 :: proc "contextless" () -> YUV_Coeffs {
 	}
 }
 
-// yuv_frame_size is the byte size of a w×h YUV420P frame.
+// yuv_frame_size is the byte size of a w×h YUV420P frame (chroma rounds up
+// for odd sizes, as ffmpeg lays it out).
 yuv_frame_size :: proc(w, h: int) -> int {
-	return w * h + 2 * (w / 2) * (h / 2)
+	return w * h + 2 * ((w + 1) / 2) * ((h + 1) / 2)
 }
 
 // rgb_to_yuv420p converts rows [y0, y1) of img (both even) into out, a whole
