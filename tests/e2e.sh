@@ -153,6 +153,19 @@ check "a cell started 1 s in shows the source's second second, blue ($p)" near "
 p=$(pixel "$JOBOUT" 4.5 480 540) # the first of two cells side by side
 check "the stills scene is not the background ($p)" far "$p" "11 15 23" 12
 
+# --- --end loop starts a source again; hold keeps its last frame ---
+for end in loop hold; do
+	$TESSERA grid "$WORK/a.mp4" "$WORK/redblue.mp4" --end $end --quality crf=18 --preset veryfast \
+		-o "$WORK/$end.mp4" > "$WORK/$end.log" 2>&1 || { fail "grid --end $end runs"; cat "$WORK/$end.log"; }
+done
+set -- $($TESSERA grid "$WORK/a.mp4" "$WORK/redblue.mp4" -o "$WORK/p.mp4" --dry-run |
+	sed -n 's/^  cell 2 .*→ Rect{x = \([0-9]*\), y = \([0-9]*\), w = \([0-9]*\), h = \([0-9]*\)}.*/\1 \2 \3 \4/p')
+LX=$(($1 + $3 / 2)) LY=$(($2 + $4 * 3 / 4))
+p=$(pixel "$WORK/loop.mp4" 2.5 "$LX" "$LY")
+check "a 2 s red-then-blue cell looped is red again at 2.5 s ($p)" near "$p" "255 0 0" 16
+p=$(pixel "$WORK/hold.mp4" 2.5 "$LX" "$LY")
+check "held, it stays blue at 2.5 s ($p)" near "$p" "0 0 255" 16
+
 # --- the quality search, the size cap, --force ---
 Q=$WORK/q.mp4
 if $TESSERA grid "$WORK/a.mp4" "$WORK/b.mp4" --size 640x360 --quality high --preset veryfast \

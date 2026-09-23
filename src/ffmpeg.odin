@@ -406,6 +406,12 @@ decoder_read :: proc(d: ^Decoder, buf: []u8) -> bool {
 	return true
 }
 
+// decoder_status reaps a decoder whose stream has ended and reports whether
+// ffmpeg failed; decoder_close after it is a no-op.
+decoder_status :: proc(d: ^Decoder) -> Err {
+	return finish_child(&d.child)
+}
+
 // decoder_close stops the child, killing it if it is not done.
 decoder_close :: proc(d: ^Decoder) -> Err {
 	return finish_child(&d.child, kill = !d.eof)

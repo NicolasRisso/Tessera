@@ -79,6 +79,73 @@ caption_text :: proc(text: string, from, to: f64, canvas_h: int) -> Text {
 	return t
 }
 
+// ---- On threads ----
+//
+// A frame is two batches: first every stale cell cache, cut into row
+// chunks; then the canvas, cut into bands of rows, each band composed and
+// converted to YUV by one task. Nothing is shared between tasks of a batch
+// except what they only read.
+
+RESAMPLE_CHUNK_ROWS :: 32
+
+@(private = "file")
+Chunk :: struct {
+	cs:     ^Cell_State,
+	y0, y1: int,
+}
+
+@(private = "file")
+Frame_Work :: struct {
+	canvas: ^Image,
+	st:     ^Scene_State,
+	t:      f64,
+	yuv:    []u8,
+	chunks: []Chunk,
+	band_h: int, // even
+	bands:  int,
+}
+
+@(private = "file")
+resample_task :: proc(data: rawptr, i: int) {
+	fw := (^Frame_Work)(data)
+	c := fw.chunks[i]
+	buf := make([]f32, resampler_buffer_len(&c.cs.rs), context.temp_allocator)
+	resample_cell_rows(c.cs, c.y0, c.y1, buf)
+}
+
+@(private = "file")
+band_task :: proc(data: rawptr, i: int) {
+	fw := (^Frame_Work)(data)
+	y0 := i * fw.band_h
+	y1 := min(y0 + fw.band_h, fw.canvas.h)
+	band := Rect{0, y0, fw.canvas.w, y1 - y0}
+	compose_band(fw.canvas, fw.st, fw.t, band)
+	rgb_to_yuv420p(fw.canvas^, fw.yuv, y0, y1)
+}
+
+// compose_frame_yuv draws frame t and converts it to yuv420p, on the
+// workers' threads.
+compose_frame_yuv :: proc(canvas: ^Image, st: ^Scene_State, t: f64, yuv: []u8, w: ^Workers) {
+	fw := Frame_Work{canvas = canvas, st = st, t = t, yuv = yuv}
+	chunks := make([dynamic]Chunk, context.temp_allocator)
+	for &cs in st.cells {
+		if !cell_needs_resample(&cs) {
+			continue
+		}
+		for y := 0; y < cs.dst.h; y += RESAMPLE_CHUNK_ROWS {
+			append(&chunks, Chunk{&cs, y, min(y + RESAMPLE_CHUNK_ROWS, cs.dst.h)})
+		}
+		cs.cached = cs.version
+	}
+	fw.chunks = chunks[:]
+	workers_run(w, len(fw.chunks), resample_task, &fw)
+	// About four bands per thread, so a slow band does not hold the frame.
+	fw.bands = clamp(w.threads * 4, 1, canvas.h / 2)
+	fw.band_h = (canvas.h / fw.bands + 1) &~ 1
+	fw.bands = (canvas.h + fw.band_h - 1) / fw.band_h
+	workers_run(w, fw.bands, band_task, &fw)
+}
+
 // compose_frame draws a whole frame on the calling thread.
 compose_frame :: proc(canvas: ^Image, st: ^Scene_State, t: f64) {
 	for &cs in st.cells {

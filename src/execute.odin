@@ -39,6 +39,7 @@ execute_job :: proc(job: ^Job) -> int {
 	w: Workers
 	workers_init(&w, job.threads if job.threads > 0 else default_threads())
 	defer workers_destroy(&w)
+	r.workers = &w
 	tmp, derr := os.make_directory_temp("", "tessera-*", context.allocator)
 	if derr != nil {
 		errorf("cannot create a temporary directory: %v", derr)
@@ -74,7 +75,8 @@ compose_into :: proc(r: ^Resolved, cmd: []string, tmp: string) -> (stats: Render
 		return
 	}
 	encoder_close(&enc) or_return
-	fmt.printf("compose: %d frames in %.1f s, %.1f frames/s\n", stats.frames, stats.seconds, f64(stats.frames) / max(stats.seconds, 1e-3))
+	fmt.printf("compose: %d frames in %.1f s, %.1f frames/s (reading sources %.1f s, composing %.1f s, writing to the encoder %.1f s)\n",
+		stats.frames, stats.seconds, f64(stats.frames) / max(stats.seconds, 1e-3), stats.decode_wait, stats.compose, stats.encode_wait)
 	return stats, nil
 }
 

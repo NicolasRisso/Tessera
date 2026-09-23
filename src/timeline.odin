@@ -1,9 +1,9 @@
 package tessera
 
+import "base:intrinsics"
 import "core:fmt"
 import "core:math"
 import "core:os"
-import "core:path/filepath"
 import "core:time"
 
 // The frame loop. Output frame n of a scene is at t = n / fps; a cell shows
@@ -19,9 +19,9 @@ Cell_State :: struct {
 	crop:      Rect, // the part of the source shown
 	rs:        Resampler,
 	cache:     Image, // the resampled current frame, dst-sized
-	frame:     []u8, // the current source frame, rgb24
-	spare:     []u8, // the next read goes here, then the two swap
-	dec:       Decoder,
+	frame:     []u8, // the current source frame, rgb24 (a prefetch buffer, or still_frame)
+	still_frame: []u8,
+	pf:        Prefetch, // the decoder, read ahead on its own thread
 	decoding:  bool,
 	shown:     int, // index of frame within the current pass; -1: none yet
 	version:   int, // bumps with every new frame in `frame`
@@ -45,12 +45,13 @@ Scene_State :: struct {
 
 // Resolved is a job with every source probed and the canvas and rate fixed.
 Resolved :: struct {
-	job:    ^Job,
-	tools:  Tools,
-	probes: map[string]Probe,
-	fps:    Rational,
-	w, h:   int,
-	text:   ^Text_Engine,
+	job:     ^Job,
+	tools:   Tools,
+	probes:  map[string]Probe,
+	fps:     Rational,
+	w, h:    int,
+	text:    ^Text_Engine,
+	workers: ^Workers,
 }
 
 // decode_rate is the rate the decoder delivers frames at.
@@ -260,47 +261,62 @@ open_scene :: proc(r: ^Resolved, st: ^Scene_State, tmp: string) -> Err {
 	scene_sprites(r, st)
 	for &cs, i in st.cells {
 		p := cs.probe
-		cs.frame = make([]u8, p.width * p.height * 3)
-		cs.spare = make([]u8, p.width * p.height * 3)
 		cs.rs = resampler_make(p.width, p.height, cs.crop, cs.dst.w, cs.dst.h)
 		cs.cache = image_make(cs.dst.w, cs.dst.h)
 		cs.shown = -1
 		cs.cached = -1
 		cs.visible = false
-		start_decoder(r, &cs, tmp, st.index, i) or_return
 		if p.still {
-			if !decoder_read(&cs.dec, cs.frame) {
-				_ = decoder_close(&cs.dec)
+			// Decoded once, here, and shown for the whole scene.
+			dec := decoder_open(r.tools, p, 0, decode_log(tmp, st.index, i)) or_return
+			cs.still_frame = make([]u8, dec.frame_bytes)
+			if !decoder_read(&dec, cs.still_frame) {
+				_ = decoder_close(&dec)
 				return fmt.aprintf("%s: could not decode the image", cs.cell.src)
 			}
-			decoder_close(&cs.dec) or_return
-			cs.decoding = false
+			decoder_close(&dec) or_return
+			cs.frame = cs.still_frame
 			cs.shown = 0
 			cs.version = 1
 			cs.length = 1
 			cs.visible = true
+			continue
 		}
+		start_decoder(r, &cs, tmp, st.index, i) or_return
 	}
 	return nil
 }
 
 @(private = "file")
+decode_log :: proc(tmp: string, scene, cell: int) -> string {
+	return tmp_file(tmp, fmt.tprintf("decode-s%d-c%d.log", scene + 1, cell + 1))
+}
+
+@(private = "file")
 start_decoder :: proc(r: ^Resolved, cs: ^Cell_State, tmp: string, scene, cell: int) -> Err {
-	name := fmt.tprintf("decode-s%d-c%d.log", scene + 1, cell + 1)
-	log, _ := filepath.join({tmp, name}, context.temp_allocator)
-	cs.dec = decoder_open(r.tools, cs.probe, cs.cell.start, log) or_return
+	dec := decoder_open(r.tools, cs.probe, cs.cell.start, decode_log(tmp, scene, cell)) or_return
+	prefetch_start(&cs.pf, dec)
 	cs.decoding = true
 	return nil
 }
 
+// stop_decoder ends a cell's decoder; its frame buffers go with it.
+@(private = "file")
+stop_decoder :: proc(cs: ^Cell_State) -> Err {
+	if !cs.decoding {
+		return nil
+	}
+	cs.decoding = false
+	if !cs.probe.still {
+		cs.frame = nil
+	}
+	return prefetch_stop(&cs.pf)
+}
+
 close_scene :: proc(st: ^Scene_State) {
 	for &cs in st.cells {
-		if cs.decoding {
-			_ = decoder_close(&cs.dec)
-			cs.decoding = false
-		}
-		delete(cs.frame)
-		delete(cs.spare)
+		_ = stop_decoder(&cs)
+		delete(cs.still_frame)
 		resampler_delete(&cs.rs)
 		image_delete(&cs.cache)
 	}
@@ -314,6 +330,8 @@ close_scene :: proc(st: ^Scene_State) {
 }
 
 // cell_advance brings the cell to the source frame shown at scene time t.
+// After the source's last frame the decoder's reader has stopped but its
+// buffers (and so the held last frame) live until stop_decoder.
 cell_advance :: proc(r: ^Resolved, cs: ^Cell_State, t: f64, tmp: string, scene, cell: int) -> Err {
 	if cs.probe.still {
 		return nil
@@ -329,27 +347,32 @@ cell_advance :: proc(r: ^Resolved, cs: ^Cell_State, t: f64, tmp: string, scene, 
 			case .Black:
 				cs.visible = false
 			case .Loop:
-				if cs.length <= 0 {
-					cs.visible = false
-					return nil
-				}
+				stop_decoder(cs) or_return
 				cs.loop_base += cs.length
 				start_decoder(r, cs, tmp, scene, cell) or_return
 				cs.shown = -1
+				cs.length = 0
 				continue
 			}
 			return nil
 		}
 		for cs.shown < local {
-			if !cs.decoding || !decoder_read(&cs.dec, cs.spare) {
-				if cs.decoding {
-					cs.decoding = false
-					decoder_close(&cs.dec) or_return
+			frame: []u8
+			ok := false
+			if cs.decoding {
+				frame, ok = prefetch_next(&cs.pf)
+			}
+			if !ok {
+				if cs.decoding && intrinsics.atomic_load(&cs.pf.eof) {
+					// Report a decoder that failed rather than ended.
+					if derr := decoder_status(&cs.pf.dec); derr != nil {
+						return derr
+					}
 				}
 				cs.length = cs.shown + 1
 				break
 			}
-			cs.frame, cs.spare = cs.spare, cs.frame
+			cs.frame = frame
 			cs.shown += 1
 			cs.version += 1
 		}
@@ -366,16 +389,22 @@ cell_advance :: proc(r: ^Resolved, cs: ^Cell_State, t: f64, tmp: string, scene, 
 }
 
 Render_Stats :: struct {
-	frames:  int,
-	seconds: f64, // wall time from the first decoder to the last frame written
+	frames:      int,
+	seconds:     f64, // wall time from the first decoder to the last frame written
+	decode_wait: f64, // of which reading source frames
+	compose:     f64, // composing and converting
+	encode_wait: f64, // writing to the encoder
 }
 
 // render composes every scene and writes the frames to the encoder.
 render :: proc(r: ^Resolved, enc: ^Encoder, tmp: string) -> (stats: Render_Stats, err: Err) {
 	canvas := image_make(r.w, r.h)
 	defer image_delete(&canvas)
-	yuv := make([]u8, yuv_frame_size(r.w, r.h))
-	defer delete(yuv)
+	wb: Write_Behind
+	write_behind_start(&wb, enc, yuv_frame_size(r.w, r.h))
+	defer if werr := write_behind_finish(&wb); werr != nil && err == nil {
+		err = werr
+	}
 	total := 0
 	for &scene, i in r.job.scenes {
 		st := plan_scene(r, &scene, i) or_return
@@ -391,12 +420,20 @@ render :: proc(r: ^Resolved, enc: ^Encoder, tmp: string) -> (stats: Render_Stats
 		open_scene(r, &st, tmp) or_return
 		for n in 0 ..< st.frames {
 			t := f64(n) * f64(r.fps.den) / f64(r.fps.num)
+			t0 := time.tick_now()
 			for &cs, ci in st.cells {
 				cell_advance(r, &cs, t, tmp, si, ci) or_return
 			}
-			compose_frame(&canvas, &st, t)
-			rgb_to_yuv420p(canvas, yuv, 0, r.h)
-			encoder_write(enc, yuv) or_return
+			t1 := time.tick_now()
+			yuv := write_behind_buffer(&wb) // waits while the writer is two frames behind
+			t2 := time.tick_now()
+			compose_frame_yuv(&canvas, &st, t, yuv, r.workers)
+			if !write_behind_submit(&wb) {
+				return stats, write_behind_finish(&wb)
+			}
+			stats.decode_wait += time.duration_seconds(time.tick_diff(t0, t1))
+			stats.encode_wait += time.duration_seconds(time.tick_diff(t1, t2))
+			stats.compose += time.duration_seconds(time.tick_since(t2))
 			done += 1
 			if tty && (done % 30 == 0 || done == total) {
 				secs := time.duration_seconds(time.tick_since(started))
