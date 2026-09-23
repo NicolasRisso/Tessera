@@ -72,11 +72,19 @@ Scene_Duration :: union {
 	Duration_Rule,
 }
 
+// Caption is a timed line in the house style (bottom centre, on a box),
+// sized from the canvas once it is known.
+Caption :: struct {
+	text:     string,
+	from, to: f64, // to <= 0: the scene's end
+}
+
 Scene :: struct {
 	cells:      []Cell,
 	layout:     Layout,
 	duration:   Scene_Duration,
 	texts:      []Text,
+	captions:   []Caption,
 	background: Color,
 }
 

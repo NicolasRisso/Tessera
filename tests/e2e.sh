@@ -89,6 +89,28 @@ check "red cell is red at 0.5 s with --end black ($p)" near "$p" "255 0 0" 12
 p=$(pixel "$OUT2" 2.5 "$RX" "$RY")
 check "red cell is background at 2.5 s with --end black ($p)" near "$p" "11 15 23" 12
 
+# --- text: a label's box and a caption's box darken the cell under them ---
+gen -f lavfi -i color=c=0x808080:s=1280x720 -frames:v 1 "$WORK/grey.png"
+OUT3=$WORK/text.mp4
+if $TESSERA grid "$WORK/grey.png" --duration 2 --label "Grey" --caption "A CAPTION@0.5-" \
+	-o "$OUT3" --quality crf=18 --preset veryfast > "$WORK/text.log" 2>&1; then
+	pass "grid with a label and a caption runs"
+else
+	fail "grid with a label and a caption runs"; cat "$WORK/text.log"
+fi
+# The picture fills 16..1904 x 16..1064 (letterboxed 16:9 in a 1888x1048 cell).
+set -- $($TESSERA grid "$WORK/grey.png" --duration 2 -o "$WORK/p.mp4" --dry-run |
+	sed -n 's/.*→ Rect{x = \([0-9]*\), y = \([0-9]*\), .*/\1 \2/p')
+LX=$(($1 + 30)) LY=$(($2 + 16)) # in the box's top padding, clear of the rounded corner
+p=$(pixel "$OUT3" 1 "$LX" "$LY")
+check "the label's box darkens its corner ($p)" near "$p" "43 43 43" 16
+p=$(pixel "$OUT3" 1 960 540)
+check "the cell's middle is untouched ($p)" near "$p" "128 128 128" 6
+p=$(pixel "$OUT3" 0.2 960 1026)
+check "no caption before its start ($p)" near "$p" "128 128 128" 6
+p=$(pixel "$OUT3" 1.5 960 1026)
+check "the caption's box is there after its fade ($p)" near "$p" "43 43 43" 16
+
 # --- usage errors exit 2, runtime failures 1 ---
 set +e
 $TESSERA grid "$WORK/a.mp4" > /dev/null 2>&1; code=$?

@@ -165,11 +165,18 @@ execute_job :: proc(job: ^Job) -> int {
 		errorf("%s", err.?)
 		return EXIT_RUNTIME
 	}
+	te: Text_Engine
+	if ferr := load_font(&te, job.font_path); ferr != nil {
+		errorf("%s", ferr.?)
+		return EXIT_RUNTIME
+	}
+	defer text_engine_destroy(&te)
 	r, rerr := resolve(job, tools)
 	if rerr != nil {
 		errorf("%s", rerr.?)
 		return EXIT_RUNTIME
 	}
+	r.text = &te
 	crf := PLACEHOLDER_CRF
 	if q, ok := job.encode.quality.(CRF); ok {
 		crf = int(q)
@@ -263,4 +270,20 @@ command_line :: proc(cmd: []string) -> string {
 		}
 	}
 	return strings.to_string(b)
+}
+
+// load_font reads the --font file, or takes the embedded font.
+load_font :: proc(te: ^Text_Engine, path: string) -> Err {
+	data := DEFAULT_FONT_DATA
+	name := DEFAULT_FONT_NAME
+	if path != "" {
+		bytes, err := os.read_entire_file(path, context.allocator)
+		if err != nil {
+			return fmt.aprintf("--font %s: %v", path, err)
+		}
+		data, name = bytes, path
+	}
+	font := font_load(data, name) or_return
+	text_engine_init(te, font)
+	return nil
 }

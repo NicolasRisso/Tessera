@@ -17,6 +17,13 @@ layout
   --gap PX                  between cells (default 8)
   --margin PX               around the grid (default 16)
   --bg #RRGGBB              background (default #0B0F17)
+text
+  --label TEXT              one per input, in order, drawn in its cell's top
+                            left (repeat the option; "" leaves a cell bare)
+  --title TEXT              a line above the grid
+  --caption "TEXT@FROM-TO"  a timed line at the bottom (seconds; "@3-" runs
+                            to the end; no @ is the whole video); repeatable
+  --font PATH               a TrueType (.ttf) font (default: Inter SemiBold)
 time
   --fps N                   output rate (default: the highest input's, max 60)
   --duration longest|shortest|SECONDS   (default longest)
@@ -151,6 +158,8 @@ parse_grid :: proc(list: []string) -> (job: Job, err: Err) {
 	job.encode = default_encode()
 	job.width, job.height = DEFAULT_CANVAS_W, DEFAULT_CANVAS_H
 	inputs := make([dynamic]string)
+	labels := make([dynamic]string)
+	captions := make([dynamic]Caption)
 	fit := Fit.Contain
 	end := End.Hold
 	for ; args.i < len(args.list); args.i += 1 {
@@ -214,6 +223,14 @@ parse_grid :: proc(list: []string) -> (job: Job, err: Err) {
 			}
 		case "--preset":
 			job.encode.preset = option_value(&args, name, inline, has) or_return
+		case "--label":
+			append(&labels, option_value(&args, name, inline, has) or_return)
+		case "--title":
+			scene.layout.title = option_value(&args, name, inline, has) or_return
+		case "--caption":
+			append(&captions, parse_caption(option_value(&args, name, inline, has) or_return) or_return)
+		case "--font":
+			job.font_path = option_value(&args, name, inline, has) or_return
 		case "--ffmpeg":
 			job.ffmpeg = option_value(&args, name, inline, has) or_return
 		case "--dry-run":
@@ -239,13 +256,48 @@ parse_grid :: proc(list: []string) -> (job: Job, err: Err) {
 	if scene.layout.cols > 0 && scene.layout.rows > 0 && scene.layout.cols * scene.layout.rows < len(inputs) {
 		return job, fmt.aprintf("grid: a %dx%d grid cannot hold %d inputs", scene.layout.cols, scene.layout.rows, len(inputs))
 	}
+	if len(labels) > len(inputs) {
+		return job, fmt.aprintf("grid: %d labels for %d inputs", len(labels), len(inputs))
+	}
 	cells := make([]Cell, len(inputs))
 	for in_path, i in inputs {
 		cells[i] = Cell{src = in_path, fit = fit, end = end}
+		if i < len(labels) {
+			cells[i].label = labels[i]
+		}
 	}
 	scene.cells = cells
+	scene.captions = captions[:]
 	scenes := make([]Scene, 1)
 	scenes[0] = scene
 	job.scenes = scenes
 	return job, nil
+}
+
+// parse_caption reads "TEXT@FROM-TO": seconds, TO empty for the end, no @
+// for the whole scene. The last @ splits, so the text may hold one.
+parse_caption :: proc(v: string) -> (c: Caption, err: Err) {
+	at := strings.last_index_byte(v, '@')
+	if at < 0 {
+		return Caption{text = v}, nil
+	}
+	c.text = v[:at]
+	span := v[at + 1:]
+	dash := strings.index_byte(span, '-')
+	if dash < 0 {
+		return c, fmt.aprintf("--caption %q: the time is FROM-TO in seconds, like @2-5.5 or @3-", v)
+	}
+	if dash > 0 {
+		ok: bool
+		if c.from, ok = strconv.parse_f64(span[:dash]); !ok || c.from < 0 {
+			return c, fmt.aprintf("--caption %q: %q is not a time in seconds", v, span[:dash])
+		}
+	}
+	if dash + 1 < len(span) {
+		ok: bool
+		if c.to, ok = strconv.parse_f64(span[dash + 1:]); !ok || c.to <= c.from {
+			return c, fmt.aprintf("--caption %q: the end must be a time after the start", v)
+		}
+	}
+	return c, nil
 }

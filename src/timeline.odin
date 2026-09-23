@@ -40,6 +40,7 @@ Scene_State :: struct {
 	grid_rect:  Rect,
 	title_rect: Rect, // empty without a title
 	label_size: f32,
+	sprites:    [dynamic]Sprite, // labels, the title, the texts, the captions
 }
 
 // Resolved is a job with every source probed and the canvas and rate fixed.
@@ -49,6 +50,7 @@ Resolved :: struct {
 	probes: map[string]Probe,
 	fps:    Rational,
 	w, h:   int,
+	text:   ^Text_Engine,
 }
 
 // decode_rate is the rate the decoder delivers frames at.
@@ -227,8 +229,29 @@ plan_scene :: proc(r: ^Resolved, scene: ^Scene, index: int) -> (st: Scene_State,
 	return st, nil
 }
 
+// scene_sprites renders the scene's labels, title and texts.
+scene_sprites :: proc(r: ^Resolved, st: ^Scene_State) {
+	for cs in st.cells {
+		if cs.cell.label == "" {
+			continue
+		}
+		t := label_text(cs.cell.label, st.label_size, cs.dst)
+		append(&st.sprites, make_sprite(r.text, t, r.w, r.h))
+	}
+	if st.scene.layout.title != "" {
+		append(&st.sprites, make_sprite(r.text, title_text(st.scene.layout.title, st.title_rect), r.w, r.h))
+	}
+	for t in st.scene.texts {
+		append(&st.sprites, make_sprite(r.text, t, r.w, r.h))
+	}
+	for c in st.scene.captions {
+		append(&st.sprites, make_sprite(r.text, caption_text(c.text, c.from, c.to, r.h), r.w, r.h))
+	}
+}
+
 // open_scene starts the decoders and allocates the buffers.
 open_scene :: proc(r: ^Resolved, st: ^Scene_State, tmp: string) -> Err {
+	scene_sprites(r, st)
 	for &cs, i in st.cells {
 		p := cs.probe
 		cs.frame = make([]u8, p.width * p.height * 3)
@@ -277,6 +300,11 @@ close_scene :: proc(st: ^Scene_State) {
 	}
 	delete(st.cells)
 	st.cells = nil
+	for &s in st.sprites {
+		sprite_delete(&s)
+	}
+	delete(st.sprites)
+	st.sprites = nil
 }
 
 // cell_advance brings the cell to the source frame shown at scene time t.
