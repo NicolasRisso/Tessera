@@ -50,13 +50,30 @@ run_main :: proc(args: []string) -> int {
 		fmt.print(USAGE)
 		return EXIT_OK
 	}
+	if len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h") {
+		return print_command_help(cmd)
+	}
+	switch cmd {
+	case "probe":
+		return cmd_probe(rest)
+	}
 	fmt.eprintf("tessera: unknown command %q\n\n", cmd)
 	fmt.eprint(USAGE)
 	return EXIT_USAGE
 }
 
+PROBE_USAGE :: `usage: tessera probe <input>... [--ffmpeg PATH]
+
+Prints what tessera sees in each input: size, frame rate, frame count,
+duration, codec and pixel format, and whether it is a still or has a
+variable frame rate.
+`
+
 print_command_help :: proc(cmd: string) -> int {
 	switch cmd {
+	case "probe":
+		fmt.print(PROBE_USAGE)
+		return EXIT_OK
 	case "version", "help":
 		fmt.print(USAGE)
 		return EXIT_OK
@@ -70,4 +87,56 @@ errorf :: proc(format: string, args: ..any) {
 	fmt.eprint("tessera: ")
 	fmt.eprintf(format, ..args)
 	fmt.eprintln()
+}
+
+// Err is a failure message for the user, or nil. Messages are whole
+// sentences that name the file, field or tool at fault.
+Err :: Maybe(string)
+
+cmd_probe :: proc(args: []string) -> int {
+	inputs := make([dynamic]string, context.temp_allocator)
+	ffmpeg_flag := ""
+	for i := 0; i < len(args); i += 1 {
+		a := args[i]
+		switch {
+		case a == "--ffmpeg":
+			if i + 1 >= len(args) {
+				errorf("--ffmpeg needs a path")
+				return EXIT_USAGE
+			}
+			i += 1
+			ffmpeg_flag = args[i]
+		case len(a) > 1 && a[0] == '-':
+			errorf("probe: unknown option %q", a)
+			return EXIT_USAGE
+		case:
+			append(&inputs, a)
+		}
+	}
+	if len(inputs) == 0 {
+		fmt.eprint(PROBE_USAGE)
+		return EXIT_USAGE
+	}
+	tools, terr := find_tools(ffmpeg_flag)
+	if terr != nil {
+		errorf("%s", terr.?)
+		return EXIT_RUNTIME
+	}
+	code := EXIT_OK
+	for path in inputs {
+		p, err := probe(tools, path)
+		if err != nil {
+			errorf("%s", err.?)
+			code = EXIT_RUNTIME
+			continue
+		}
+		if p.still {
+			fmt.printf("%s: still %dx%d, %s %s\n", path, p.width, p.height, p.codec, p.pix_fmt)
+			continue
+		}
+		fmt.printf("%s: %dx%d, %d/%d fps, %d frames, %.3f s, %s %s%s\n", path, p.width, p.height,
+			p.fps.num, p.fps.den, p.frames, p.duration, p.codec, p.pix_fmt,
+			" (variable frame rate: decoded at the average)" if p.vfr else "")
+	}
+	return code
 }
