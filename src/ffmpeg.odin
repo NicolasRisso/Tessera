@@ -110,6 +110,18 @@ capture :: proc(command: []string) -> (stdout: string, err: Err) {
 	return string(out), nil
 }
 
+// log_summary picks the line of an ffmpeg log that says what went wrong: the
+// first one mentioning an error, else the last.
+log_summary :: proc(text: string) -> string {
+	it := text
+	for line in strings.split_lines_iterator(&it) {
+		if strings.contains(line, "rror") || strings.contains(line, "Invalid") {
+			return strings.trim_space(line)
+		}
+	}
+	return last_line(text)
+}
+
 // last_line is the last non-empty line of a log, for error messages.
 last_line :: proc(text: string) -> string {
 	s := strings.trim_right_space(text)
@@ -320,7 +332,7 @@ finish_child :: proc(c: ^Child, kill := false) -> (err: Err) {
 	}
 	if !kill && (!state.success || state.exit_code != 0) {
 		log, _ := os.read_entire_file(c.log_path, context.temp_allocator)
-		return fmt.aprintf("ffmpeg failed (exit %d): %s [log: %s]", state.exit_code, last_line(string(log)), c.log_path)
+		return fmt.aprintf("ffmpeg failed (exit %d): %s [log: %s]", state.exit_code, log_summary(string(log)), c.log_path)
 	}
 	return nil
 }
@@ -347,6 +359,11 @@ decoder_command :: proc(tools: Tools, src: Probe, start: f64, allocator := conte
 	} else if src.vfr {
 		append(&cmd, "-fps_mode", "cfr", "-r", fmt.aprintf("%d/%d", src.avg_fps.num, src.avg_fps.den, allocator = allocator))
 	}
+	// ffmpeg's default yuv→rgb path truncates: half a level darker on
+	// average. Accurate rounding and full chroma interpolation cost ~15 %
+	// of the decoder's time and remove the bias. An output option: before
+	// -i it is silently ignored.
+	append(&cmd, "-sws_flags", "accurate_rnd+full_chroma_int")
 	append(&cmd, "-f", "rawvideo", "-pix_fmt", "rgb24", "-")
 	return cmd[:]
 }

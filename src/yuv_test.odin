@@ -83,7 +83,7 @@ test_yuv_round_trip_through_ffmpeg :: proc(t: ^testing.T) {
 	for c, i in TEST_COLOURS {
 		got := image_pixel(back, i * B + B / 2, B / 2)
 		for k in 0 ..< 3 {
-			testing.expectf(t, abs(int(got[k]) - int(c[k])) <= 2, "%v came back as %v", c, got)
+			testing.expectf(t, abs(int(got[k]) - int(c[k])) <= 1, "%v came back as %v", c, got)
 		}
 	}
 }
