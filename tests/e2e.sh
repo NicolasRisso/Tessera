@@ -46,6 +46,7 @@ near() {
 	set -- $1 $2 "$3"
 	[ $(( ($1 - $4) * ($1 - $4) <= $7 * $7 && ($2 - $5) * ($2 - $5) <= $7 * $7 && ($3 - $6) * ($3 - $6) <= $7 * $7 )) -eq 1 ]
 }
+far() { ! near "$@"; }
 
 # cell_centre N → "X Y", the centre of cell N from --dry-run.
 cell_centre() {
@@ -110,6 +111,47 @@ p=$(pixel "$OUT3" 0.2 960 1026)
 check "no caption before its start ($p)" near "$p" "128 128 128" 6
 p=$(pixel "$OUT3" 1.5 960 1026)
 check "the caption's box is there after its fade ($p)" near "$p" "43 43 43" 16
+
+# --- run: a 3-scene job (title, 2x2 with labels, caption and an offset, stills) ---
+gen -f lavfi -i color=c=red:s=320x240:r=30:d=1 -f lavfi -i color=c=blue:s=320x240:r=30:d=1 \
+	-filter_complex "[0][1]concat=n=2:v=1" -c:v libx264 -qp 0 -preset ultrafast "$WORK/redblue.mp4"
+cat > "$WORK/job.json" <<'JOB'
+{
+	"output": "job.mp4",
+	"encode": {"quality": "crf=18", "preset": "veryfast"},
+	"scenes": [
+		{"duration": 1, "texts": [{"text": "TITLE", "size": 120, "box_color": "#FF8800", "box_pad": 30}]},
+		{
+			"cells": [
+				{"src": "a.mp4", "label": "A"},
+				{"src": "b.mp4", "label": "B"},
+				{"src": "redblue.mp4", "label": "from 1 s", "start": 1},
+				"still.png",
+			],
+			"captions": [{"text": "a caption", "from": 0.2}],
+		},
+		{"duration": 1, "cells": ["still.png", "grey.png"]},
+	],
+}
+JOB
+if $TESSERA run "$WORK/job.json" > "$WORK/job.log" 2>&1; then
+	pass "run a 3-scene job"
+else
+	fail "run a 3-scene job"; cat "$WORK/job.log"
+fi
+JOBOUT=$WORK/job.mp4
+frames=$(probe_field "$JOBOUT" stream=nb_frames)
+check "1 + 3 + 1 s ($frames frames at 60 fps)" [ "$frames" -ge 299 ] && [ "$frames" -le 301 ]
+p=$(pixel "$JOBOUT" 0.5 960 540)
+check "the title scene's text box is drawn ($p)" far "$p" "11 15 23" 40
+set -- $($TESSERA run "$WORK/job.json" --dry-run |
+	awk '/^scene 2:/ { s = 1 } /^scene 3:/ { s = 0 } s && /^  cell 3 / { print }' |
+	sed -n 's/.*→ Rect{x = \([0-9]*\), y = \([0-9]*\), w = \([0-9]*\), h = \([0-9]*\)}.*/\1 \2 \3 \4/p')
+OX=$(($1 + $3 / 2)) OY=$(($2 + $4 * 3 / 4))
+p=$(pixel "$JOBOUT" 1.5 "$OX" "$OY")
+check "a cell started 1 s in shows the source's second second, blue ($p)" near "$p" "0 0 255" 16
+p=$(pixel "$JOBOUT" 4.5 480 540) # the first of two cells side by side
+check "the stills scene is not the background ($p)" far "$p" "11 15 23" 12
 
 # --- usage errors exit 2, runtime failures 1 ---
 set +e

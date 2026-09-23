@@ -66,6 +66,8 @@ run_main :: proc(args: []string) -> int {
 			return EXIT_USAGE
 		}
 		return execute_job(&job)
+	case "run":
+		return cmd_run(rest)
 	}
 	fmt.eprintf("tessera: unknown command %q\n\n", cmd)
 	fmt.eprint(USAGE)
@@ -86,6 +88,9 @@ print_command_help :: proc(cmd: string) -> int {
 		return EXIT_OK
 	case "grid":
 		fmt.print(GRID_USAGE)
+		return EXIT_OK
+	case "run":
+		fmt.print(RUN_USAGE)
 		return EXIT_OK
 	case "version", "help":
 		fmt.print(USAGE)
@@ -286,4 +291,61 @@ load_font :: proc(te: ^Text_Engine, path: string) -> Err {
 	font := font_load(data, name) or_return
 	text_engine_init(te, font)
 	return nil
+}
+
+RUN_USAGE :: `usage: tessera run <job.json> [-o OUT] [--ffmpeg PATH] [--dry-run]
+
+Plays the job's scenes one after another into one video. The job format is
+in the README; paths inside it are relative to the job file. -o replaces
+the job's output.
+`
+
+cmd_run :: proc(args: []string) -> int {
+	path, output, ffmpeg := "", "", ""
+	dry := false
+	for i := 0; i < len(args); i += 1 {
+		a := args[i]
+		switch a {
+		case "--dry-run":
+			dry = true
+		case "-o", "--output", "--ffmpeg":
+			if i + 1 >= len(args) {
+				errorf("%s needs a value", a)
+				return EXIT_USAGE
+			}
+			i += 1
+			if a == "--ffmpeg" {
+				ffmpeg = args[i]
+			} else {
+				output = args[i]
+			}
+		case:
+			if len(a) > 1 && a[0] == '-' {
+				errorf("run: unknown option %q (see tessera run --help)", a)
+				return EXIT_USAGE
+			}
+			if path != "" {
+				errorf("run: one job file at a time")
+				return EXIT_USAGE
+			}
+			path = a
+		}
+	}
+	if path == "" {
+		fmt.eprint(RUN_USAGE)
+		return EXIT_USAGE
+	}
+	job, err := load_job(path)
+	if err != nil {
+		errorf("%s", err.?)
+		return EXIT_USAGE
+	}
+	if output != "" {
+		job.output = output
+	}
+	if ffmpeg != "" {
+		job.ffmpeg = ffmpeg
+	}
+	job.dry_run = job.dry_run || dry
+	return execute_job(&job)
 }

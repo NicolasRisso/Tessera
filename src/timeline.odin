@@ -223,8 +223,14 @@ plan_scene :: proc(r: ^Resolved, scene: ^Scene, index: int) -> (st: Scene_State,
 		cs.dst, cs.crop = fit_rect(cs.probe.width, cs.probe.height, cs.rect, c.fit)
 	}
 	st.label_size = scene.layout.label_size
-	if st.label_size <= 0 && n > 0 {
-		st.label_size = clamp(f32(rects[0].h) * 0.05, 14, 40)
+	if st.label_size <= 0 {
+		// From the smallest picture, not the cell: a 16:9 picture in a tall
+		// cell would otherwise get a label sized for the cell.
+		h := st.cells[0].dst.h
+		for cs in st.cells {
+			h = min(h, cs.dst.h)
+		}
+		st.label_size = math.round(clamp(f32(h) * 0.05, 14, 40))
 	}
 	return st, nil
 }
