@@ -32,7 +32,16 @@ encoding
   -o, --output PATH         the output file (.mp4, .mkv, .mov)
   --codec h264|hevc|av1     (default h264)
   --quality visually-lossless|high|small|crf=N   (default visually-lossless)
+                            a preset searches for the largest CRF whose SSIM
+                            stays over its target (mean/every frame):
+                            visually-lossless 0.990/0.980, high 0.980/0.965,
+                            small 0.965/0.940; crf=N encodes at N, no search
+  --max-size MB             raise the CRF until the file fits; refuses when
+                            that would fall below the small target
+  --force                   encode at the size cap even below that floor
   --preset NAME             the encoder's preset (default per codec)
+  --keep-master             keep the lossless master beside the output
+  --threads N               compositing and SSIM threads (default cores - 1)
   --ffmpeg PATH             the ffmpeg binary (else TESSERA_FFMPEG, else PATH)
   --dry-run                 print the plan and the ffmpeg commands, encode nothing
 `
@@ -221,6 +230,14 @@ parse_grid :: proc(list: []string) -> (job: Job, err: Err) {
 			if job.encode.quality, ok = parse_quality(v); !ok {
 				return job, fmt.aprintf("--quality: %q is not visually-lossless, high, small or crf=N", v)
 			}
+		case "--max-size":
+			job.encode.max_size_mb = float_value(name, option_value(&args, name, inline, has) or_return, 0.001, 1e6) or_return
+		case "--force":
+			job.encode.force = true
+		case "--keep-master":
+			job.encode.keep_master = true
+		case "--threads":
+			job.threads = int_value(name, option_value(&args, name, inline, has) or_return, 1, 256) or_return
 		case "--preset":
 			job.encode.preset = option_value(&args, name, inline, has) or_return
 		case "--label":

@@ -365,8 +365,13 @@ cell_advance :: proc(r: ^Resolved, cs: ^Cell_State, t: f64, tmp: string, scene, 
 	}
 }
 
+Render_Stats :: struct {
+	frames:  int,
+	seconds: f64, // wall time from the first decoder to the last frame written
+}
+
 // render composes every scene and writes the frames to the encoder.
-render :: proc(r: ^Resolved, enc: ^Encoder, tmp: string) -> Err {
+render :: proc(r: ^Resolved, enc: ^Encoder, tmp: string) -> (stats: Render_Stats, err: Err) {
 	canvas := image_make(r.w, r.h)
 	defer image_delete(&canvas)
 	yuv := make([]u8, yuv_frame_size(r.w, r.h))
@@ -403,5 +408,7 @@ render :: proc(r: ^Resolved, enc: ^Encoder, tmp: string) -> Err {
 	if tty {
 		fmt.eprintln()
 	}
-	return nil
+	stats.frames = done
+	stats.seconds = time.duration_seconds(time.tick_since(started))
+	return stats, nil
 }

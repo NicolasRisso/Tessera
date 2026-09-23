@@ -153,6 +153,31 @@ check "a cell started 1 s in shows the source's second second, blue ($p)" near "
 p=$(pixel "$JOBOUT" 4.5 480 540) # the first of two cells side by side
 check "the stills scene is not the background ($p)" far "$p" "11 15 23" 12
 
+# --- the quality search, the size cap, --force ---
+Q=$WORK/q.mp4
+if $TESSERA grid "$WORK/a.mp4" "$WORK/b.mp4" --size 640x360 --quality high --preset veryfast \
+	-o "$Q" > "$WORK/q.log" 2>&1; then
+	pass "grid --quality high runs"
+else
+	fail "grid --quality high runs"; cat "$WORK/q.log"
+fi
+line=$(grep '^crf [0-9]* (ssim mean' "$WORK/q.log" || true)
+check "the search reports its choice ($line)" [ -n "$line" ]
+whole=$(sed -n 's/.*whole video ssim mean \([0-9.]*\), min \([0-9.]*\).*/\1 \2/p' "$WORK/q.log")
+check "the result meets high over the whole video ($whole)" awk -v m="${whole% *}" -v n="${whole#* }" 'BEGIN { exit !(m >= 0.980 && n >= 0.960) }'
+set +e
+$TESSERA grid "$WORK/a.mp4" "$WORK/b.mp4" --size 640x360 --quality high --preset veryfast \
+	--max-size 0.001 -o "$WORK/cap.mp4" > "$WORK/cap.log" 2>&1; code=$?
+set -e
+check "an unreachable size cap is refused (exit $code)" [ $code -eq 1 ]
+check "the refusal says what the floor needs" grep -q "the floor needs about" "$WORK/cap.log"
+if $TESSERA grid "$WORK/a.mp4" "$WORK/b.mp4" --size 640x360 --quality high --preset veryfast \
+	--max-size 0.001 --force -o "$WORK/forced.mp4" > "$WORK/forced.log" 2>&1 && [ -s "$WORK/forced.mp4" ]; then
+	pass "--force encodes anyway"
+else
+	fail "--force encodes anyway"; cat "$WORK/forced.log"
+fi
+
 # --- usage errors exit 2, runtime failures 1 ---
 set +e
 $TESSERA grid "$WORK/a.mp4" > /dev/null 2>&1; code=$?
