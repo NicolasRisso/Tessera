@@ -56,7 +56,9 @@ https://github.com/BtbN/FFmpeg-Builds (a "full" build has libx265, libaom and
 libvmaf), and put its `bin` on `PATH` or pass `--ffmpeg C:\path\ffmpeg.exe`.
 The code uses only Odin's portable `core:os` for files, pipes and processes;
 the Windows build is type-checked but has not been linked or run (see
-[Limits](#limits)).
+[Limits](#limits)). To type-check it from Linux, against an Odin source
+checkout of the same version:
+`ODIN_ROOT=path/to/Odin odin check src -target:windows_amd64 -vet -strict-style`.
 
 ## Commands
 

@@ -421,7 +421,7 @@ choose_crf :: proc(s: ^Search, q: Preset_Quality, e: Encode_Settings) -> (ch: Ch
 // run_child starts a child that needs no pipe: stdin and stdout closed,
 // stderr in log_path.
 run_child :: proc(command: []string, log_path: string) -> (c: Child, err: Err) {
-	logf, lerr := os.open(log_path, {.Write, .Create, .Trunc})
+	logf, lerr := os.open(log_path, {.Write, .Create, .Trunc, .Inheritable}) // see start_child
 	if lerr != nil {
 		return {}, fmt.aprintf("cannot create %s: %v", log_path, lerr)
 	}

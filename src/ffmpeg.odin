@@ -286,7 +286,9 @@ Child :: struct {
 // start_child runs command with its stderr in log_path and one pipe to us:
 // its stdout when reading, its stdin otherwise.
 start_child :: proc(command: []string, log_path: string, reading: bool) -> (c: Child, err: Err) {
-	logf, lerr := os.open(log_path, {.Write, .Create, .Trunc})
+	// Inheritable: on Windows a child's stderr must be an inheritable handle.
+	// It is closed as soon as the child has it, so no other child sees it.
+	logf, lerr := os.open(log_path, {.Write, .Create, .Trunc, .Inheritable})
 	if lerr != nil {
 		return {}, fmt.aprintf("cannot create %s: %v", log_path, lerr)
 	}
@@ -303,6 +305,7 @@ start_child :: proc(command: []string, log_path: string, reading: bool) -> (c: C
 		desc.stdin = r
 		ours, theirs = w, r
 	}
+	keep_to_self(ours)
 	p, serr := os.process_start(desc)
 	os.close(theirs) // the child holds its own copy; ours must go or EOF never comes
 	if serr != nil {
