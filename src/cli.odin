@@ -40,6 +40,8 @@ encoding
                             that would fall below the small target
   --force                   encode at the size cap even below that floor
   --preset NAME             the encoder's preset (default per codec)
+  --encoder-opt NAME=VALUE  passed to ffmpeg as -NAME VALUE after the codec's
+                            defaults (tune=animation, aq-mode=3, g=600, ...)
   --keep-master             keep the lossless master beside the output
   --threads N               compositing and SSIM threads (default cores - 1)
   --ffmpeg PATH             the ffmpeg binary (else TESSERA_FFMPEG, else PATH)
@@ -238,6 +240,11 @@ parse_grid :: proc(list: []string) -> (job: Job, err: Err) {
 			job.encode.keep_master = true
 		case "--threads":
 			job.threads = int_value(name, option_value(&args, name, inline, has) or_return, 1, 256) or_return
+		case "--encoder-opt":
+			v := option_value(&args, name, inline, has) or_return
+			if !add_encoder_option(&job.encode, v) {
+				return job, fmt.aprintf("--encoder-opt: %q is not NAME=VALUE (like tune=animation, aq-mode=3, g=600)", v)
+			}
 		case "--preset":
 			job.encode.preset = option_value(&args, name, inline, has) or_return
 		case "--label":

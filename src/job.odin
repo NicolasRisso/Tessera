@@ -124,6 +124,25 @@ Encode_Settings :: struct {
 	keep_master: bool,
 	force:       bool, // encode even when the size cap cannot be met
 	metric:      Metric,
+	options:     [dynamic]string, // extra encoder options, as "-name", "value" pairs
+}
+
+// add_encoder_option checks NAME=VALUE and appends it as -NAME VALUE.
+// Names are option names ([a-z0-9_:-]), never anything a shell would read:
+// the pair goes to ffmpeg as two arguments.
+add_encoder_option :: proc(e: ^Encode_Settings, opt: string) -> bool {
+	eq := strings.index_byte(opt, '=')
+	if eq <= 0 || eq == len(opt) - 1 {
+		return false
+	}
+	name := opt[:eq]
+	for c in name {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == ':') {
+			return false
+		}
+	}
+	append(&e.options, fmt.aprintf("-%s", name), opt[eq + 1:])
+	return true
 }
 
 Job :: struct {
@@ -254,7 +273,7 @@ quality_string :: proc(q: Quality, allocator := context.temp_allocator) -> strin
 // ---- Loading a job file (JSON, comments and trailing commas allowed) ----
 
 JOB_FIELDS :: []string{"output", "size", "fps", "font", "ffmpeg", "threads", "encode", "scenes"}
-ENCODE_FIELDS :: []string{"codec", "quality", "max_size_mb", "preset", "keep_master", "force", "metric"}
+ENCODE_FIELDS :: []string{"codec", "quality", "max_size_mb", "preset", "keep_master", "force", "metric", "options"}
 SCENE_FIELDS :: []string{"cells", "layout", "duration", "texts", "captions", "background"}
 LAYOUT_FIELDS :: []string{"cols", "rows", "gap", "margin", "label_size", "title"}
 CELL_FIELDS :: []string{"src", "label", "start", "fit", "end"}
@@ -482,6 +501,26 @@ jw_job :: proc(jw: ^Job_Walker, root: json.Value) -> (job: Job, err: Err) {
 		job.encode.preset = get_string(jw, e, "preset", "encode") or_return
 		job.encode.keep_master = get_bool(jw, e, "keep_master", "encode") or_return
 		job.encode.force = get_bool(jw, e, "force", "encode") or_return
+		if opts_raw, has := e["options"]; has {
+			opts, ok := opts_raw.(json.Object)
+			if !ok {
+				return job, fail(jw, "encode.options", "expected an object of encoder options, like {\"tune\": \"animation\"}")
+			}
+			for k, v in opts {
+				val: string
+				#partial switch x in v {
+				case json.String:
+					val = x
+				case json.Float:
+					val = fmt.aprintf("%v", x)
+				case:
+					return job, fail(jw, fmt.tprintf("encode.options.%s", k), "expected a string or a number")
+				}
+				if !add_encoder_option(&job.encode, fmt.tprintf("%s=%s", k, val)) {
+					return job, fail(jw, fmt.tprintf("encode.options.%s", k), "not an option name and value")
+				}
+			}
+		}
 	}
 
 	scenes := as_array(jw, o, "scenes", "job") or_return

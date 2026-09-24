@@ -33,9 +33,16 @@ codec_name :: proc(c: Codec) -> string {
 	return ""
 }
 
+// H264_KEYINT_SECONDS: x264's default keyframe interval is 250 frames (4.2 s
+// at 60 fps). On the study's game footage a 10 s interval made the file 25 %
+// smaller at the same CRF and SSIM (docs/encoding.md); seeking lands within
+// 10 s, which a showcase does not mind.
+H264_KEYINT_SECONDS :: 10
+
 // codec_args are the output arguments for one encode at crf, ending before
-// the output path.
-codec_args :: proc(e: Encode_Settings, crf: int, output: string, allocator := context.allocator) -> []string {
+// the output path. The defaults are §3.5's plus what docs/encoding.md
+// measured: for H.264, -tune animation and a 10 s keyframe interval.
+codec_args :: proc(e: Encode_Settings, crf: int, output: string, fps: Rational, allocator := context.allocator) -> []string {
 	a := make([dynamic]string, allocator)
 	q := fmt.aprintf("%d", crf, allocator = allocator)
 	switch e.codec {
@@ -44,12 +51,15 @@ codec_args :: proc(e: Encode_Settings, crf: int, output: string, allocator := co
 		if crf > 0 { // crf 0 is lossless, which the high profile refuses
 			append(&a, "-profile:v", "high")
 		}
+		keyint := max(int(rational_f64(fps) * H264_KEYINT_SECONDS + 0.5), 1)
+		append(&a, "-tune", "animation", "-g", fmt.aprintf("%d", keyint, allocator = allocator))
 	case .HEVC:
 		append(&a, "-c:v", "libx265", "-preset", e.preset if e.preset != "" else "slow", "-crf", q, "-tag:v", "hvc1")
 		append(&a, "-x265-params", "log-level=error")
 	case .AV1:
 		append(&a, "-c:v", "libaom-av1", "-crf", q, "-b:v", "0", "-cpu-used", e.preset if e.preset != "" else "4", "-row-mt", "1")
 	}
+	append(&a, ..e.options[:]) // after the defaults: ffmpeg keeps the last of a repeated option
 	append(&a, "-pix_fmt", "yuv420p")
 	append(&a, ..COLOR_TAGS)
 	if wants_faststart(output) {
@@ -69,7 +79,7 @@ encode_command :: proc(r: ^Resolved, crf: int, output: string, allocator := cont
 	cmd := make([dynamic]string, allocator)
 	append(&cmd, r.tools.ffmpeg, "-nostdin", "-v", "error", "-y")
 	append(&cmd, ..encoder_input_args(r.w, r.h, r.fps, allocator))
-	append(&cmd, ..codec_args(r.job.encode, crf, output, allocator))
+	append(&cmd, ..codec_args(r.job.encode, crf, output, r.fps, allocator))
 	append(&cmd, output)
 	return cmd[:]
 }
@@ -97,9 +107,19 @@ target_for :: proc(q: Preset_Quality) -> Target {
 	return {0.990, 0.980}
 }
 
-CRF_LO :: 10
-CRF_HI :: 40
-CRF_MAX :: 51 // how far the size cap may push
+// crf_range is where the search looks (lo ..= hi) and how far a size cap may
+// push (top). The plan's 10..40 is x264's scale (x265's is the same);
+// libaom's runs to 63 and at 40 it still scored SSIM 0.995 on the samples,
+// so AV1 searches up to 63.
+crf_range :: proc(c: Codec) -> (lo, hi, top: int) {
+	switch c {
+	case .H264, .HEVC:
+		return 10, 40, 51
+	case .AV1:
+		return 10, 63, 63
+	}
+	return 10, 40, 51
+}
 
 // master_command encodes the raw frames losslessly (x264 qp 0, 4:2:0, the
 // same frames the final encode will get).
@@ -125,7 +145,7 @@ transcode_command :: proc(r: ^Resolved, master: string, start: f64, frames, crf:
 	if frames > 0 {
 		append(&cmd, "-frames:v", fmt.aprintf("%d", frames, allocator = allocator))
 	}
-	append(&cmd, ..codec_args(r.job.encode, crf, output, allocator))
+	append(&cmd, ..codec_args(r.job.encode, crf, output, r.fps, allocator))
 	append(&cmd, output)
 	return cmd[:]
 }
@@ -270,9 +290,10 @@ Choice :: struct {
 // met without dropping below the `small` floor is an error unless forced.
 choose_crf :: proc(s: ^Search, q: Preset_Quality, e: Encode_Settings) -> (ch: Choice, err: Err) {
 	t := target_for(q)
-	crf, found := largest_meeting(s, CRF_LO, CRF_HI, t) or_return
+	lo, hi, top := crf_range(e.codec)
+	crf, found := largest_meeting(s, lo, hi, t) or_return
 	if !found {
-		ch.note = fmt.aprintf("even crf %d misses the %s target; using it", CRF_LO, quality_string(q))
+		ch.note = fmt.aprintf("even crf %d misses the %s target; using it", lo, quality_string(q))
 	}
 	ch.crf = crf
 	ch.candidate = s.tried[crf]
@@ -280,7 +301,7 @@ choose_crf :: proc(s: ^Search, q: Preset_Quality, e: Encode_Settings) -> (ch: Ch
 		return ch, nil
 	}
 	// Over the cap: the smallest CRF that fits, if it keeps the floor.
-	fit, fits := smallest_fitting(s, crf + 1, CRF_MAX, e.max_size_mb) or_return
+	fit, fits := smallest_fitting(s, min(crf + 1, top), top, e.max_size_mb) or_return
 	floor := target_for(.Small)
 	fc := s.tried[fit]
 	if fits && meets(fc, floor) {
@@ -288,7 +309,7 @@ choose_crf :: proc(s: ^Search, q: Preset_Quality, e: Encode_Settings) -> (ch: Ch
 		ch.note = fmt.aprintf("raised from crf %d to fit %s", crf, size_string(e.max_size_mb))
 		return ch, nil
 	}
-	floor_crf, floor_found := largest_meeting(s, crf, CRF_MAX, floor) or_return
+	floor_crf, floor_found := largest_meeting(s, crf, top, floor) or_return
 	need := s.tried[floor_crf].est_mb if floor_found else ch.candidate.est_mb
 	if !e.force {
 		return ch, fmt.aprintf(

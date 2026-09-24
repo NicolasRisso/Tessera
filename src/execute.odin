@@ -126,7 +126,8 @@ encode_searched :: proc(r: ^Resolved, q: Preset_Quality, tmp: string, w: ^Worker
 		finish_child(&final) or_return
 		mb := file_mb(job.output)
 		cap := job.encode.max_size_mb
-		if cap <= 0 || mb <= cap || attempt == 3 || crf >= CRF_MAX {
+		_, _, top := crf_range(job.encode.codec)
+		if cap <= 0 || mb <= cap || attempt == 3 || crf >= top {
 			break
 		}
 		// The estimate undershot: one CRF up, if the floor allows it.
