@@ -21,7 +21,7 @@ VALID_JOB :: `{
 				{"src": "/abs/b.mp4", "label": "B", "fit": "cover", "end": "loop"},
 				"c.png",
 			],
-			"layout": {"cols": 2, "rows": 2, "title": "Two by two"},
+			"layout": {"cols": 2, "rows": 2, "title": "Two by two", "label_pos": "below"},
 			"captions": [{"text": "note", "from": 1, "to": 4}],
 			"duration": "shortest",
 			"background": "#101010",
@@ -56,6 +56,8 @@ test_job_valid_parses :: proc(t: ^testing.T) {
 	testing.expect_value(t, s1.cells[1].end, End.Loop)
 	testing.expect_value(t, s1.cells[2].src, "/jobs/c.png")
 	testing.expect_value(t, s1.layout.title, "Two by two")
+	testing.expect_value(t, s1.layout.label_pos, Label_Pos.Below)
+	testing.expect_value(t, s0.layout.label_pos, Label_Pos.Above) // the default
 	testing.expect_value(t, s1.duration, Scene_Duration(Duration_Rule.Shortest))
 	testing.expect_value(t, s1.background, Color{16, 16, 16, 255})
 	testing.expect_value(t, s1.captions[0].to, 4)
@@ -86,6 +88,7 @@ test_job_errors_name_the_field :: proc(t: ^testing.T) {
 		{`"end": "loop"`, `"end": "bounce"`, "scenes[1].cells[1].end"},
 		{`{"src": "a.mp4", `, `{"source": "a.mp4", `, "scenes[1].cells[0]"},
 		{`"cols": 2, "rows": 2`, `"cols": 1, "rows": 2`, "scenes[1].layout"},
+		{`"label_pos": "below"`, `"label_pos": "over"`, "scenes[1].layout.label_pos"},
 		{`"from": 1, "to": 4`, `"from": 4, "to": 1`, "scenes[1].captions[0].to"},
 		{`"background": "#101010"`, `"background": 16`, "scenes[1].background"},
 		{`"scenes": [`, `"scenes": 3, "unused": [`, "scenes"},

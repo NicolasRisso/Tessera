@@ -18,8 +18,10 @@ layout
   --margin PX               around the grid (default 16)
   --bg #RRGGBB              background (default #0B0F17)
 text
-  --label TEXT              one per input, in order, drawn in its cell's top
-                            left (repeat the option; "" leaves a cell bare)
+  --label TEXT              one per input, in order (repeat the option; ""
+                            leaves a cell bare)
+  --label-pos above|below|inside   a strip above or below the picture, or
+                            on its top left (default above)
   --title TEXT              a line above the grid
   --caption "TEXT@FROM-TO"  a timed line at the bottom (seconds; "@3-" runs
                             to the end; no @ is the whole video); repeatable
@@ -139,6 +141,18 @@ parse_fit :: proc(v: string) -> (f: Fit, ok: bool) {
 		return .Cover, true
 	}
 	return .Contain, false
+}
+
+parse_label_pos :: proc(v: string) -> (p: Label_Pos, ok: bool) {
+	switch v {
+	case "above":
+		return .Above, true
+	case "below":
+		return .Below, true
+	case "inside":
+		return .Inside, true
+	}
+	return .Above, false
 }
 
 parse_codec :: proc(v: string) -> (c: Codec, ok: bool) {
@@ -261,6 +275,12 @@ parse_grid :: proc(list: []string) -> (job: Job, err: Err) {
 			job.encode.preset = option_value(&args, name, inline, has) or_return
 		case "--label":
 			append(&labels, option_value(&args, name, inline, has) or_return)
+		case "--label-pos":
+			v := option_value(&args, name, inline, has) or_return
+			ok: bool
+			if scene.layout.label_pos, ok = parse_label_pos(v); !ok {
+				return job, fmt.aprintf("--label-pos: %q is not above, below or inside", v)
+			}
 		case "--title":
 			scene.layout.title = option_value(&args, name, inline, has) or_return
 		case "--caption":

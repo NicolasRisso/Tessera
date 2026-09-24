@@ -93,7 +93,7 @@ check "red cell is background at 2.5 s with --end black ($p)" near "$p" "11 15 2
 # --- text: a label's box and a caption's box darken the cell under them ---
 gen -f lavfi -i color=c=0x808080:s=1280x720 -frames:v 1 "$WORK/grey.png"
 OUT3=$WORK/text.mp4
-if $TESSERA grid "$WORK/grey.png" --duration 2 --label "Grey" --caption "A CAPTION@0.5-" \
+if $TESSERA grid "$WORK/grey.png" --duration 2 --label "Grey" --label-pos inside --caption "A CAPTION@0.5-" \
 	-o "$OUT3" --quality crf=18 --preset veryfast > "$WORK/text.log" 2>&1; then
 	pass "grid with a label and a caption runs"
 else
@@ -111,6 +111,58 @@ p=$(pixel "$OUT3" 0.2 960 1026)
 check "no caption before its start ($p)" near "$p" "128 128 128" 6
 p=$(pixel "$OUT3" 1.5 960 1026)
 check "the caption's box is there after its fade ($p)" near "$p" "43 43 43" 16
+
+# --- labels above the picture (the default), below, and inside as in v1 ---
+for c in 808080 C03030 3060C0 30A050; do
+	gen -f lavfi -i color=c=0x$c:s=640x360 -frames:v 1 "$WORK/c$c.png"
+done
+FOUR="$WORK/c808080.png $WORK/cC03030.png $WORK/c3060C0.png $WORK/c30A050.png"
+LABELS="--label Grey --label Red&co --label Blue --label Green"
+# rects POS → cell 1's picture and label strip from --dry-run, "X Y W H X Y W H".
+rects() {
+	$TESSERA grid $FOUR $LABELS --label-pos "$1" --size 1280x720 --duration 0.1 -o "$WORK/p.mp4" --dry-run > "$WORK/rects.log"
+	pic=$(sed -n 's/^  cell 1 .*→ Rect{x = \([0-9]*\), y = \([0-9]*\), w = \([0-9]*\), h = \([0-9]*\)}.*/\1 \2 \3 \4/p' "$WORK/rects.log")
+	strip=$(sed -n 's/^    label "Grey" Rect{x = \([0-9]*\), y = \([0-9]*\), w = \([0-9]*\), h = \([0-9]*\)}.*/\1 \2 \3 \4/p' "$WORK/rects.log" | head -n 1)
+	echo $pic $strip
+}
+# ink FILE X Y W H → how many pixels of the region are far from the background.
+ink() {
+	rm -f "$WORK/ink.rgb"
+	"$FFMPEG" -nostdin -v error -i "$1" -frames:v 1 -vf "crop=$4:$5:$2:$3" -f rawvideo -pix_fmt rgb24 "$WORK/ink.rgb"
+	od -An -v -tu1 -w3 "$WORK/ink.rgb" | awk '{ d = ($1 - 11) ^ 2 + ($2 - 15) ^ 2 + ($3 - 23) ^ 2; if (d > 60 * 60) n++ } END { print n + 0 }'
+}
+for pos in above below; do
+	if $TESSERA grid $FOUR $LABELS --label-pos $pos --size 1280x720 --duration 0.5 --quality crf=18 --preset veryfast \
+		-o "$WORK/$pos.mp4" > "$WORK/$pos.log" 2>&1; then
+		pass "grid --label-pos $pos runs"
+	else
+		fail "grid --label-pos $pos runs"; cat "$WORK/$pos.log"
+	fi
+	set -- $(rects $pos)
+	check "--label-pos $pos: the dry run has cell 1's picture and strip ($*)" [ $# -eq 8 ]
+	if [ $pos = above ]; then
+		check "the strip is above the picture" [ $(($6 + $8)) -le $2 ]
+		n=$(ink "$WORK/$pos.mp4" $5 $6 $7 $(($8 * 6 / 10)))
+		check "the top 60 % of the strip above the picture has ink ($n px)" [ "$n" -ge 20 ]
+		first=$2 last=$(($2 + $4 - 1))
+	else
+		check "the strip is below the picture" [ $(($2 + $4)) -le $6 ]
+		n=$(ink "$WORK/$pos.mp4" $5 $6 $7 $8)
+		check "the strip below the picture has ink ($n px)" [ "$n" -ge 20 ]
+		first=$2 last=$(($2 + $4 - 1))
+	fi
+	for y in $first $((first + 1)) $((first + 16)) $last; do
+		p=$(pixel "$WORK/$pos.mp4" 0.2 $(($1 + 30)) $y)
+		check "--label-pos $pos: the picture's row $((y - first)) at its left is grey, uncovered ($p)" near "$p" "128 128 128" 6
+	done
+done
+# Inside is v1, pixel for pixel: the md5 of the decoded frames of a lossless
+# encode, recorded from v1 at defd3f7 (x264 crf 0 is lossless, so the hash
+# does not depend on the encoder's version).
+$TESSERA grid $FOUR $LABELS --label-pos inside --size 640x360 --duration 0.1 --fps 10 --quality crf=0 \
+	-o "$WORK/inside.mp4" > "$WORK/inside.log" 2>&1 || { fail "grid --label-pos inside runs"; cat "$WORK/inside.log"; }
+md5=$("$FFMPEG" -nostdin -v error -i "$WORK/inside.mp4" -f md5 - 2>&1)
+check "--label-pos inside reproduces v1 ($md5)" [ "$md5" = MD5=738e23402937ec38f4ad0ed28d050e87 ]
 
 # --- run: a 3-scene job (title, 2x2 with labels, caption and an offset, stills) ---
 gen -f lavfi -i color=c=red:s=320x240:r=30:d=1 -f lavfi -i color=c=blue:s=320x240:r=30:d=1 \

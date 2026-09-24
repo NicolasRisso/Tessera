@@ -19,7 +19,7 @@ End :: enum {
 
 Cell :: struct {
 	src:   string, // video or still image path
-	label: string, // drawn in the cell; "" for none
+	label: string, // drawn above, below or on the picture; "" for none
 	start: f64,    // seconds into the source where the cell begins
 	fit:   Fit,
 	end:   End,    // what the cell shows after its source runs out
@@ -56,11 +56,20 @@ Text :: struct {
 	fade:          f64, // seconds of fade in and out
 }
 
+// Label_Pos is where a cell's label goes: in a strip of its own above or
+// below the picture, or on the picture's top left (v1).
+Label_Pos :: enum {
+	Above,
+	Below,
+	Inside,
+}
+
 Layout :: struct {
 	cols, rows: int, // 0: chosen by grid_dims
 	gap:        int,
 	margin:     int,
-	label_size: f32, // 0: from the cell height
+	label_size: f32, // 0: from the picture height
+	label_pos:  Label_Pos,
 	title:      string, // a band above the grid; "" for none
 }
 
@@ -171,7 +180,7 @@ default_text :: proc() -> Text {
 }
 
 default_layout :: proc() -> Layout {
-	return Layout{gap = DEFAULT_GAP, margin = DEFAULT_MARGIN}
+	return Layout{gap = DEFAULT_GAP, margin = DEFAULT_MARGIN, label_pos = .Above}
 }
 
 default_scene :: proc() -> Scene {
@@ -275,7 +284,7 @@ quality_string :: proc(q: Quality, allocator := context.temp_allocator) -> strin
 JOB_FIELDS :: []string{"output", "size", "fps", "font", "ffmpeg", "threads", "encode", "scenes"}
 ENCODE_FIELDS :: []string{"codec", "quality", "max_size_mb", "preset", "keep_master", "force", "metric", "options"}
 SCENE_FIELDS :: []string{"cells", "layout", "duration", "texts", "captions", "background"}
-LAYOUT_FIELDS :: []string{"cols", "rows", "gap", "margin", "label_size", "title"}
+LAYOUT_FIELDS :: []string{"cols", "rows", "gap", "margin", "label_size", "label_pos", "title"}
 CELL_FIELDS :: []string{"src", "label", "start", "fit", "end"}
 CAPTION_FIELDS :: []string{"text", "from", "to"}
 TEXT_FIELDS :: []string {
@@ -568,6 +577,12 @@ jw_scene :: proc(jw: ^Job_Walker, v: json.Value, at: string) -> (s: Scene, err: 
 		s.layout.gap = int(get_number(jw, l, "gap", lw, 0, 512, DEFAULT_GAP) or_return)
 		s.layout.margin = int(get_number(jw, l, "margin", lw, 0, 512, DEFAULT_MARGIN) or_return)
 		s.layout.label_size = f32(get_number(jw, l, "label_size", lw, 0, 400, 0) or_return)
+		if lp := get_string(jw, l, "label_pos", lw) or_return; lp != "" {
+			ok: bool
+			if s.layout.label_pos, ok = parse_label_pos(lp); !ok {
+				return s, fail(jw, fmt.tprintf("%s.label_pos", lw), "%q is not \"above\", \"below\" or \"inside\"", lp)
+			}
+		}
 		s.layout.title = get_string(jw, l, "title", lw) or_return
 	}
 	cells := as_array(jw, o, "cells", at) or_return

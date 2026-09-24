@@ -32,12 +32,11 @@ execute_job :: proc(job: ^Job) -> int {
 		return EXIT_RUNTIME
 	}
 	defer text_engine_destroy(&te)
-	r, rerr := resolve(job, tools)
+	r, rerr := resolve(job, tools, &te)
 	if rerr != nil {
 		errorf("%s", rerr.?)
 		return EXIT_RUNTIME
 	}
-	r.text = &te
 	if job.dry_run {
 		return print_plan(&r)
 	}
@@ -238,6 +237,13 @@ print_plan :: proc(r: ^Resolved) -> int {
 		for cs, ci in st.cells {
 			fmt.printf("  cell %d %v: %s %dx%d → %v (crop %v)\n", ci + 1, cs.rect, cs.cell.src,
 				cs.probe.width, cs.probe.height, cs.dst, cs.crop)
+			if cs.cell.label != "" {
+				if rect_empty(cs.strip) {
+					fmt.printf("    label %q on the picture's top left, size %v\n", cs.cell.label, st.label_size)
+				} else {
+					fmt.printf("    label %q %v, size %v\n", cs.cell.label, cs.strip, st.label_size)
+				}
+			}
 			fmt.printf("    decode: %s\n", command_line(decoder_command(r.tools, cs.probe, cs.cell.start, context.temp_allocator)))
 		}
 		close_scene(&st)

@@ -75,3 +75,47 @@ test_native_canvas :: proc(t: ^testing.T) {
 	w, h = native_canvas(4, 4, 1280, 720, 8, 16, 0)
 	testing.expectf(t, w <= 3840 && h <= 2160 && w % 2 == 0 && h % 2 == 0, "capped to %dx%d", w, h)
 }
+
+@(test)
+test_place_pictures_label_strips :: proc(t: ^testing.T) {
+	canvas := Rect{0, 0, 1920, 1080}
+	sizes := [][2]int{{1280, 720}, {640, 480}, {800, 600}, {1080, 1920}, {320, 240}, {1920, 800}}
+	fits := []Fit{.Contain, .Contain, .Cover, .Contain, .Contain, .Contain}
+	for n in 1 ..= len(sizes) {
+		cols, rows := grid_dims(n, canvas.w, canvas.h, 16.0 / 9.0)
+		cells := cell_rects(canvas, cols, rows, 8, 16, n)
+		defer delete(cells)
+		for pos in ([]Label_Pos{.Above, .Below}) {
+			ps := place_pictures(cells, sizes[:n], fits[:n], cols, 57, pos)
+			defer delete(ps)
+			for p, i in ps {
+				c := cells[i]
+				inside := rect_intersect(p.dst, c) == p.dst && rect_intersect(p.strip, c) == p.strip
+				testing.expectf(t, inside, "%v n=%d cell %d %v: picture %v or strip %v escapes", pos, n, i, c, p.dst, p.strip)
+				testing.expectf(t, p.strip.h == 57 && p.strip.x == p.dst.x && p.strip.w == p.dst.w, "%v n=%d cell %d: strip %v for picture %v", pos, n, i, p.strip, p.dst)
+				if pos == .Above {
+					testing.expectf(t, p.dst.y >= p.strip.y + p.strip.h, "n=%d cell %d: picture %v not below its strip %v", n, i, p.dst, p.strip)
+				} else {
+					testing.expectf(t, p.strip.y >= p.dst.y + p.dst.h, "n=%d cell %d: picture %v not above its strip %v", n, i, p.dst, p.strip)
+				}
+				// A row's strips share a y.
+				if i % cols != 0 {
+					testing.expectf(t, p.strip.y == ps[i - 1].strip.y, "%v n=%d: strips %d and %d at y %d and %d", pos, n, i - 1, i, ps[i - 1].strip.y, p.strip.y)
+				}
+				// The picture keeps its aspect, as fit_rect gives it in the cell less the strip.
+				dst, crop := fit_rect(sizes[i][0], sizes[i][1], Rect{c.x, c.y, c.w, c.h - 57}, fits[i])
+				testing.expectf(t, p.dst.w == dst.w && p.dst.h == dst.h && p.crop == crop, "%v n=%d cell %d: %v, want the size of %v", pos, n, i, p.dst, dst)
+			}
+		}
+		// Inside, or no strip, is v1: fit_rect in the whole cell.
+		for pos in ([]Label_Pos{.Inside, .Above}) {
+			h := 57 if pos == .Inside else 0
+			ps := place_pictures(cells, sizes[:n], fits[:n], cols, h, pos)
+			defer delete(ps)
+			for p, i in ps {
+				dst, crop := fit_rect(sizes[i][0], sizes[i][1], cells[i], fits[i])
+				testing.expectf(t, p.dst == dst && p.crop == crop && rect_empty(p.strip), "%v n=%d cell %d: %v, v1 gives %v", pos, n, i, p, dst)
+			}
+		}
+	}
+}

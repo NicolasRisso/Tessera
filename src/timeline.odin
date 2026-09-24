@@ -16,6 +16,7 @@ Cell_State :: struct {
 	probe:     Probe,
 	rect:      Rect, // the cell
 	dst:       Rect, // where the picture lands (fit_rect)
+	strip:     Rect, // the label's strip above or below the picture; empty when none
 	crop:      Rect, // the part of the source shown
 	rs:        Resampler,
 	cache:     Image, // the resampled current frame, dst-sized
@@ -66,9 +67,10 @@ title_band_height :: proc(canvas_h: int) -> int {
 }
 
 // resolve probes every source once and settles the output rate and canvas.
-resolve :: proc(job: ^Job, tools: Tools) -> (r: Resolved, err: Err) {
+resolve :: proc(job: ^Job, tools: Tools, te: ^Text_Engine) -> (r: Resolved, err: Err) {
 	r.job = job
 	r.tools = tools
+	r.text = te
 	best_fps: Rational
 	for &scene in job.scenes {
 		for c in scene.cells {
@@ -107,10 +109,17 @@ resolve :: proc(job: ^Job, tools: Tools) -> (r: Resolved, err: Err) {
 				}
 			}
 			cols, rows := scene_grid(&scene, r.w, r.h, r.probes)
+			cell_h := sh
+			if scene.layout.label_pos != .Inside && scene_has_labels(&scene) {
+				// Room for a label strip sized for the largest picture, the
+				// most a label can need, so the pictures stay 1:1.
+				size := scene.layout.label_size if scene.layout.label_size > 0 else auto_label_size(sh)
+				cell_h += label_strip_height(te, size)
+			}
 			// The title band scales with the canvas, so size without it first.
-			_, h := native_canvas(cols, rows, sw, sh, scene.layout.gap, scene.layout.margin, 0)
+			_, h := native_canvas(cols, rows, sw, cell_h, scene.layout.gap, scene.layout.margin, 0)
 			extra := title_band_height(h) if scene.layout.title != "" else 0
-			r.w, r.h = native_canvas(cols, rows, sw, sh, scene.layout.gap, scene.layout.margin, extra)
+			r.w, r.h = native_canvas(cols, rows, sw, cell_h, scene.layout.gap, scene.layout.margin, extra)
 			break
 		}
 	}
@@ -118,6 +127,15 @@ resolve :: proc(job: ^Job, tools: Tools) -> (r: Resolved, err: Err) {
 		r.w, r.h = DEFAULT_CANVAS_W, DEFAULT_CANVAS_H
 	}
 	return r, nil
+}
+
+scene_has_labels :: proc(scene: ^Scene) -> bool {
+	for c in scene.cells {
+		if c.label != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // scene_grid is the scene's cols×rows, from its layout or grid_dims.
@@ -215,23 +233,36 @@ plan_scene :: proc(r: ^Resolved, scene: ^Scene, index: int) -> (st: Scene_State,
 		return st, fmt.aprintf("scene %d: a %dx%d grid cannot hold %d cells", index + 1, cols, rows, n)
 	}
 	rects := cell_rects(st.grid_rect, cols, rows, scene.layout.gap, scene.layout.margin, n, context.temp_allocator)
+	sizes := make([][2]int, n, context.temp_allocator)
+	fits := make([]Fit, n, context.temp_allocator)
 	st.cells = make([]Cell_State, n)
 	for c, i in scene.cells {
 		cs := &st.cells[i]
 		cs.cell = c
 		cs.probe = r.probes[c.src]
 		cs.rect = rects[i]
-		cs.dst, cs.crop = fit_rect(cs.probe.width, cs.probe.height, cs.rect, c.fit)
+		sizes[i] = {cs.probe.width, cs.probe.height}
+		fits[i] = c.fit
 	}
+	// The pictures as they fit their whole cells: the label size comes from
+	// these, before any strip is taken, so it does not shrink itself.
+	ps := place_pictures(rects, sizes, fits, cols, 0, .Inside, context.temp_allocator)
 	st.label_size = scene.layout.label_size
 	if st.label_size <= 0 {
 		// From the smallest picture, not the cell: a 16:9 picture in a tall
 		// cell would otherwise get a label sized for the cell.
-		h := st.cells[0].dst.h
-		for cs in st.cells {
-			h = min(h, cs.dst.h)
+		h := ps[0].dst.h
+		for p in ps {
+			h = min(h, p.dst.h)
 		}
-		st.label_size = math.round(clamp(f32(h) * 0.05, 14, 40))
+		st.label_size = auto_label_size(h)
+	}
+	if scene.layout.label_pos != .Inside && scene_has_labels(scene) {
+		label_h := label_strip_height(r.text, st.label_size)
+		ps = place_pictures(rects, sizes, fits, cols, label_h, scene.layout.label_pos, context.temp_allocator)
+	}
+	for &cs, i in st.cells {
+		cs.dst, cs.crop, cs.strip = ps[i].dst, ps[i].crop, ps[i].strip
 	}
 	return st, nil
 }
@@ -242,7 +273,7 @@ scene_sprites :: proc(r: ^Resolved, st: ^Scene_State) {
 		if cs.cell.label == "" {
 			continue
 		}
-		t := label_text(cs.cell.label, st.label_size, cs.dst)
+		t := label_text(cs.cell.label, st.label_size, st.scene.layout.label_pos, cs.dst, cs.strip, st.scene.background)
 		append(&st.sprites, make_sprite(r.text, t, r.w, r.h))
 	}
 	if st.scene.layout.title != "" {

@@ -34,12 +34,40 @@ compose_band :: proc(canvas: ^Image, st: ^Scene_State, t: f64, band: Rect) {
 
 // Label, title and caption styles.
 
-LABEL_INSET :: 12 // px from the picture's top left to the label's box
+LABEL_INSET     :: 12   // px from the picture's top left to an Inside label's box
+LABEL_STRIP_PAD :: 0.25 // of the label size, added to its line height to make its strip
 
-label_text :: proc(label: string, size: f32, dst: Rect) -> Text {
+// auto_label_size is the label size for pictures pic_h pixels high.
+auto_label_size :: proc(pic_h: int) -> f32 {
+	return math.round(clamp(f32(pic_h) * 0.05, 14, 40))
+}
+
+// label_strip_height is the height of the strip an Above or Below label
+// takes: one line of the font at size, and a small pad.
+label_strip_height :: proc(te: ^Text_Engine, size: f32) -> int {
+	f := &te.font
+	line := f32(f.ascender - f.descender + f.line_gap) * size / f32(f.units_per_em)
+	return int(math.ceil(line + size * LABEL_STRIP_PAD))
+}
+
+// label_text places a cell's label: Above or Below, left-aligned with the
+// picture and centred in its strip, on the background (dark text on a light
+// one); Inside, on the picture's top left on a translucent box.
+label_text :: proc(label: string, size: f32, pos: Label_Pos, dst, strip: Rect, background: Color) -> Text {
 	t := default_text()
 	t.text = label
 	t.size = size
+	if pos != .Inside {
+		t.anchor = .CL
+		t.x = Coord{f32(strip.x), false}
+		t.y = Coord{f32(strip.y) + f32(strip.h) / 2, false}
+		t.shadow_color = {}
+		luma := 0.2126 * f32(background.r) + 0.7152 * f32(background.g) + 0.0722 * f32(background.b)
+		if luma > 140 {
+			t.color = {0x10, 0x10, 0x10, 255}
+		}
+		return t
+	}
 	t.box_color = {0, 0, 0, 150}
 	t.box_pad = math.round(size * 0.4)
 	t.box_radius = size * 0.3

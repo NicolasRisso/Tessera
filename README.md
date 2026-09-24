@@ -10,11 +10,11 @@ tessera grid hud-topbottom.avi hud-statsleft.avi hud-statsright.avi hud-corner.a
 ```
 
 gives one 1920×1080 video with the four recordings in a 2×2 grid, each
-labelled, a title above, conformed to one frame rate, and encoded with H.264
-at the largest CRF whose SSIM against a lossless master stays over 0.990 on
-average and 0.980 on every sampled frame. For the four 40 s recordings above
-that is crf 25 and 1.75 MB, with SSIM 0.9915 (worst frame 0.9844) over the
-whole video.
+labelled above its picture, a title above, conformed to one frame rate, and
+encoded with H.264 at the largest CRF whose SSIM against a lossless master
+stays over 0.990 on average and 0.980 on every sampled frame. For the four
+40 s recordings above that is crf 27 and 1.32 MB, with SSIM 0.9909 (worst
+frame 0.9842) over the whole video.
 
 tessera does the layout, the resampling, the compositing, the colour
 conversion, the text (its own TrueType parser and rasteriser) and the quality
@@ -73,7 +73,8 @@ Every input (video or still image) goes in one cell, in the order given.
 | `--fit contain` \| `cover` | letterbox each input in its cell (default), or fill the cell and crop the centre |
 | `--gap PX`, `--margin PX` | between cells (8) and around the grid (16) |
 | `--bg #RRGGBB` | background (#0B0F17) |
-| `--label TEXT` | one per input, in order, in the picture's top left on a translucent box; repeat the option, `""` leaves a cell bare |
+| `--label TEXT` | one per input, in order; repeat the option, `""` leaves a cell bare |
+| `--label-pos above` \| `below` \| `inside` | a strip of its own above (default) or below each picture, left-aligned with it on the background, or v1's place in the picture's top left on a translucent box. Labels default to outside because the corner of a game capture is usually its HUD, which is part of what is compared |
 | `--title TEXT` | a line in a band above the grid |
 | `--caption "TEXT@FROM-TO"` | a timed line at the bottom centre, on a box, fading in and out; seconds, `@3-` runs to the end, no `@` is the whole video; repeatable |
 | `--font PATH` | a TrueType `.ttf` (default: the embedded Inter SemiBold) |
@@ -212,13 +213,13 @@ the job file. Every error names the field: `job.json: scenes[1].cells[0].start:
 | | `encode` | `codec`, `quality`, `metric`, `max_size_mb`, `preset`, `keep_master`, `force`, `options` (an object of encoder options) |
 | | `scenes` | one or more, played in order |
 | scene | `cells` | up to 16; a cell is a path or an object |
-| | `layout` | `cols`, `rows`, `gap`, `margin`, `label_size` (px; default 5 % of the picture height), `title` |
+| | `layout` | `cols`, `rows`, `gap`, `margin`, `label_size` (px; default 5 % of the picture height), `label_pos` (`"above"`, `"below"`, `"inside"`), `title` |
 | | `duration` | `"longest"` (default), `"shortest"`, or seconds; required without cells |
 | | `texts` | text objects, below |
 | | `captions` | `{"text", "from", "to"}` in the house style (bottom centre, on a box) |
 | | `background` | `#RRGGBB` |
 | cell | `src` | required: a video or an image |
-| | `label` | drawn in the picture's top left |
+| | `label` | drawn where the layout's `label_pos` says |
 | | `start` | seconds into the source where the cell begins |
 | | `fit` | `contain` (default) or `cover` |
 | | `end` | `hold` (default), `black`, `loop` |

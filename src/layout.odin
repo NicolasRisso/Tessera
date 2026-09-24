@@ -87,6 +87,53 @@ fit_rect :: proc(src_w, src_h: int, cell: Rect, fit: Fit) -> (dst: Rect, crop: R
 	return
 }
 
+// Placement is where a cell's picture lands (dst), the part of its source
+// shown (crop), and the strip its label takes (empty when none).
+Placement :: struct {
+	dst, crop, strip: Rect,
+}
+
+// place_pictures fits each picture in its cell. With a label strip of
+// label_h above or below, the picture fits in the cell less the strip, and
+// the strip spans the picture's width on that side. The pictures of a row
+// align on the strip's side, so a row's strips share a y and each hugs its
+// picture; the block is centred in the cell. With label_h 0 or Inside,
+// every picture is fitted in its whole cell (v1).
+place_pictures :: proc(cells: []Rect, sizes: [][2]int, fits: []Fit, cols, label_h: int, pos: Label_Pos, allocator := context.allocator) -> []Placement {
+	ps := make([]Placement, len(cells), allocator)
+	if label_h <= 0 || pos == .Inside {
+		for c, i in cells {
+			ps[i].dst, ps[i].crop = fit_rect(sizes[i][0], sizes[i][1], c, fits[i])
+		}
+		return ps
+	}
+	for c, i in cells {
+		lh := min(label_h, c.h - 1)
+		area := Rect{c.x, c.y + lh if pos == .Above else c.y, c.w, c.h - lh}
+		ps[i].dst, ps[i].crop = fit_rect(sizes[i][0], sizes[i][1], area, fits[i])
+	}
+	for row0 := 0; row0 < len(cells); row0 += cols {
+		row := ps[row0:min(row0 + cols, len(cells))]
+		pic_h := 0
+		for p in row {
+			pic_h = max(pic_h, p.dst.h)
+		}
+		for &p, j in row {
+			c := cells[row0 + j]
+			lh := min(label_h, c.h - 1)
+			top := c.y + (c.h - pic_h - lh) / 2
+			if pos == .Above {
+				p.strip = Rect{p.dst.x, top, p.dst.w, lh}
+				p.dst.y = top + lh
+			} else {
+				p.dst.y = top + pic_h - p.dst.h
+				p.strip = Rect{p.dst.x, top + pic_h, p.dst.w, lh}
+			}
+		}
+	}
+	return ps
+}
+
 // native_canvas sizes the canvas so that a cols×rows grid of cell_w×cell_h
 // cells shows them 1:1, plus extra_h rows of pixels above the grid (a title
 // band). Capped at 3840×2160 keeping the aspect; dimensions are even.
