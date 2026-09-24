@@ -21,6 +21,7 @@ Font :: struct {
 	cmap:          []u8, // the chosen subtable
 	cmap_format:   int,
 	kern_pairs:    []u8, // format 0 pairs, 6 bytes each, sorted; nil without kern
+	gpos_kern:     [][]u8, // GPOS pair subtables of the kern feature (gpos.odin)
 }
 
 // Curve is a quadratic Bézier from p0 through control c to p1, in font units
@@ -170,6 +171,10 @@ parse_tables :: proc(f: ^Font, dir: int) -> (ok: bool) {
 	if kern, found = find_table(data, dir, "kern") or_return; found {
 		pick_kern(f, kern) // a kern table we cannot read is ignored, not fatal
 	}
+	gpos: []u8
+	if gpos, found = find_table(data, dir, "GPOS") or_return; found {
+		f.gpos_kern = gpos_kern_subtables(gpos)
+	}
 	return true
 }
 
@@ -307,9 +312,12 @@ glyph_advance :: proc(f: ^Font, g: int) -> int {
 	return int(u16_at(f.hmtx, i * 4) or_else 0)
 }
 
-// kerning is the adjustment between two glyphs from the kern table, in font
-// units (usually negative); 0 without one.
+// kerning is the adjustment between two glyphs in font units (usually
+// negative): from GPOS when the font kerns there, else from the kern table.
 kerning :: proc(f: ^Font, left, right: int) -> int {
+	if len(f.gpos_kern) > 0 {
+		return gpos_kerning(f.gpos_kern, left, right)
+	}
 	if f.kern_pairs == nil {
 		return 0
 	}

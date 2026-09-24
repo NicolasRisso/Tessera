@@ -160,3 +160,45 @@ contains :: proc(s, sub: string) -> bool {
 	}
 	return false
 }
+
+@(test)
+test_gpos_kerning_inter :: proc(t: ^testing.T) {
+	f, err := font_load(DEFAULT_FONT_DATA)
+	testing.expect_value(t, err, nil)
+	testing.expect(t, len(f.gpos_kern) > 0, "Inter kerns in GPOS")
+	g :: proc(f: ^Font, r: rune) -> int {
+		return glyph_index(f, r)
+	}
+	for pair in ([][2]rune{{'A', 'V'}, {'T', 'o'}, {'V', 'a'}, {'L', 'T'}, {'Y', 'o'}}) {
+		k := kerning(&f, g(&f, pair[0]), g(&f, pair[1]))
+		testing.expectf(t, k < 0, "%c%c kerns by %d, want < 0", pair[0], pair[1], k)
+	}
+	testing.expect_value(t, kerning(&f, g(&f, 'o'), g(&f, 'o')), 0)
+	testing.expect_value(t, kerning(&f, g(&f, 'H'), g(&f, 'H')), 0)
+	free_all(context.temp_allocator)
+}
+
+@(test)
+test_gpos_corrupt_does_not_crash :: proc(t: ^testing.T) {
+	data := make([]u8, len(DEFAULT_FONT_DATA))
+	defer delete(data)
+	copy(data, DEFAULT_FONT_DATA)
+	f, err := font_load(data)
+	if err != nil || len(f.gpos_kern) == 0 {
+		return
+	}
+	// Scribble over each subtable, then kern every pair of a short alphabet.
+	seed: u32 = 99
+	for st in f.gpos_kern {
+		for i := 0; i < len(st); i += 5 {
+			seed = seed * 1664525 + 1013904223
+			st[i] = u8(seed >> 24)
+		}
+	}
+	for a in 'A' ..= 'z' {
+		for b in 'A' ..= 'z' {
+			_ = kerning(&f, glyph_index(&f, a), glyph_index(&f, b))
+		}
+	}
+	free_all(context.temp_allocator)
+}
