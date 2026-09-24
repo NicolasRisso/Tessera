@@ -36,6 +36,8 @@ encoding
                             stays over its target (mean/every frame):
                             visually-lossless 0.990/0.980, high 0.980/0.965,
                             small 0.965/0.940; crf=N encodes at N, no search
+  --metric ssim|vmaf        what the search measures (default ssim, ours);
+                            vmaf needs an ffmpeg with libvmaf, targets 95/90/85
   --max-size MB             raise the CRF until the file fits; refuses when
                             that would fall below the small target
   --force                   encode at the size cap even below that floor
@@ -240,6 +242,16 @@ parse_grid :: proc(list: []string) -> (job: Job, err: Err) {
 			job.encode.keep_master = true
 		case "--threads":
 			job.threads = int_value(name, option_value(&args, name, inline, has) or_return, 1, 256) or_return
+		case "--metric":
+			v := option_value(&args, name, inline, has) or_return
+			switch v {
+			case "ssim":
+				job.encode.metric = .SSIM
+			case "vmaf":
+				job.encode.metric = .VMAF
+			case:
+				return job, fmt.aprintf("--metric: %q is not ssim or vmaf", v)
+			}
 		case "--encoder-opt":
 			v := option_value(&args, name, inline, has) or_return
 			if !add_encoder_option(&job.encode, v) {

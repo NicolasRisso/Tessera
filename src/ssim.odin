@@ -140,17 +140,15 @@ ssim_result_delete :: proc(r: ^SSIM_Result) {
 	delete(r.frames)
 }
 
-// ssim_summarise fills mean and min from the per-frame scores.
+// ssim_summarise fills mean and min from the per-frame scores (any metric).
 ssim_summarise :: proc(r: ^SSIM_Result) {
-	r.mean, r.min = 0, 1
-	for s in r.frames {
+	r.mean, r.min = 0, 0
+	for s, i in r.frames {
 		r.mean += s
-		r.min = min(r.min, s)
+		r.min = s if i == 0 else min(r.min, s)
 	}
 	if len(r.frames) > 0 {
 		r.mean /= f64(len(r.frames))
-	} else {
-		r.min = 0
 	}
 }
 

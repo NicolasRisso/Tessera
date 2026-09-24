@@ -95,7 +95,19 @@ Target :: struct {
 	mean, min: f64, // every sampled frame >= min, their mean >= mean
 }
 
-target_for :: proc(q: Preset_Quality) -> Target {
+// target_for gives the preset's threshold in the job's metric. VMAF has a
+// mean threshold only (95 / 90 / 85), no per-frame floor.
+target_for :: proc(q: Preset_Quality, metric := Metric.SSIM) -> Target {
+	if metric == .VMAF {
+		switch q {
+		case .Visually_Lossless:
+			return {95, 0}
+		case .High:
+			return {90, 0}
+		case .Small:
+			return {85, 0}
+		}
+	}
 	switch q {
 	case .Visually_Lossless:
 		return {0.990, 0.980}
@@ -181,7 +193,7 @@ plan_windows :: proc(total_frames: int, fps: Rational, allocator := context.allo
 
 Candidate :: struct {
 	crf:       int,
-	mean, min: f64, // SSIM over every sampled frame
+	mean, min: f64, // the metric over every sampled frame
 	bytes:     i64, // the windows' total
 	est_mb:    f64, // the whole video, from the windows' bitrate
 	seconds:   f64, // wall time to encode the windows
@@ -224,7 +236,7 @@ evaluate :: proc(s: ^Search, crf: int) -> (c: Candidate, err: Err) {
 	total_frames := 0
 	for w, i in s.windows {
 		p := probe(s.r.tools, paths[i]) or_return
-		res := ssim_compare(s.r.tools, s.probe, w.start, p, 0, w.frames, s.workers, s.tmp) or_return
+		res := score(s.r, s.probe, w.start, p, w.frames, s.workers, s.tmp) or_return
 		append(&all.frames, ..res.frames[:])
 		ssim_result_delete(&res)
 		c.bytes += file_bytes(paths[i])
@@ -235,7 +247,7 @@ evaluate :: proc(s: ^Search, crf: int) -> (c: Candidate, err: Err) {
 	c.mean, c.min = all.mean, all.min
 	c.est_mb = f64(c.bytes) * f64(s.probe.frames) / f64(max(total_frames, 1)) / 1e6
 	s.tried[crf] = c
-	fmt.printf("  crf %2d: ssim mean %.4f, min %.4f, ≈ %s (%.0f s)\n", crf, c.mean, c.min, size_string(c.est_mb), c.seconds)
+	fmt.printf("  crf %2d: %s, ≈ %s (%.0f s)\n", crf, score_string(s.r.job.encode.metric, c.mean, c.min), size_string(c.est_mb), c.seconds)
 	return c, nil
 }
 
@@ -289,7 +301,7 @@ Choice :: struct {
 // choose_crf runs the search and applies the size cap. A cap that cannot be
 // met without dropping below the `small` floor is an error unless forced.
 choose_crf :: proc(s: ^Search, q: Preset_Quality, e: Encode_Settings) -> (ch: Choice, err: Err) {
-	t := target_for(q)
+	t := target_for(q, e.metric)
 	lo, hi, top := crf_range(e.codec)
 	crf, found := largest_meeting(s, lo, hi, t) or_return
 	if !found {
@@ -302,7 +314,7 @@ choose_crf :: proc(s: ^Search, q: Preset_Quality, e: Encode_Settings) -> (ch: Ch
 	}
 	// Over the cap: the smallest CRF that fits, if it keeps the floor.
 	fit, fits := smallest_fitting(s, min(crf + 1, top), top, e.max_size_mb) or_return
-	floor := target_for(.Small)
+	floor := target_for(.Small, e.metric)
 	fc := s.tried[fit]
 	if fits && meets(fc, floor) {
 		ch.crf, ch.candidate = fit, fc
@@ -313,8 +325,8 @@ choose_crf :: proc(s: ^Search, q: Preset_Quality, e: Encode_Settings) -> (ch: Ch
 	need := s.tried[floor_crf].est_mb if floor_found else ch.candidate.est_mb
 	if !e.force {
 		return ch, fmt.aprintf(
-			"%s cannot be met without dropping below the small quality floor (ssim %.3f / %.3f): the floor needs about %s (crf %d). Raise --max-size, or pass --force to encode at crf %d anyway",
-			size_string(e.max_size_mb), floor.mean, floor.min, size_string(need), floor_crf, fit,
+			"%s cannot be met without dropping below the small quality floor (%s): the floor needs about %s (crf %d). Raise --max-size, or pass --force to encode at crf %d anyway",
+			size_string(e.max_size_mb), target_string(e.metric, floor), size_string(need), floor_crf, fit,
 		)
 	}
 	ch.crf, ch.candidate = fit, fc
@@ -358,4 +370,26 @@ size_string :: proc(mb: f64, allocator := context.temp_allocator) -> string {
 		return fmt.aprintf("%.0f kB", mb * 1000, allocator = allocator)
 	}
 	return fmt.aprintf("%.1f MB", mb, allocator = allocator)
+}
+
+// score measures b against the master from a_start in the job's metric.
+score :: proc(r: ^Resolved, master: Probe, a_start: f64, b: Probe, frames: int, w: ^Workers, tmp: string) -> (res: SSIM_Result, err: Err) {
+	if r.job.encode.metric == .VMAF {
+		return vmaf_compare(r.tools, master, a_start, b, frames, w.threads, tmp)
+	}
+	return ssim_compare(r.tools, master, a_start, b, 0, frames, w, tmp)
+}
+
+score_string :: proc(m: Metric, mean, low: f64) -> string {
+	if m == .VMAF {
+		return fmt.tprintf("vmaf mean %.2f, min %.2f", mean, low)
+	}
+	return fmt.tprintf("ssim mean %.4f, min %.4f", mean, low)
+}
+
+target_string :: proc(m: Metric, t: Target) -> string {
+	if m == .VMAF {
+		return fmt.tprintf("vmaf mean ≥ %.0f", t.mean)
+	}
+	return fmt.tprintf("ssim mean ≥ %.3f, every frame ≥ %.3f", t.mean, t.min)
 }

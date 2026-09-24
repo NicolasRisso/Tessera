@@ -191,6 +191,20 @@ else
 	fail "--force encodes anyway"; cat "$WORK/forced.log"
 fi
 
+# --- --metric vmaf, when this ffmpeg has libvmaf ---
+if "$FFMPEG" -hide_banner -filters 2>/dev/null | grep -q ' libvmaf '; then
+	if $TESSERA grid "$WORK/a.mp4" "$WORK/b.mp4" --size 640x360 --quality high --metric vmaf --preset veryfast \
+		-o "$WORK/vmaf.mp4" > "$WORK/vmaf.log" 2>&1; then
+		pass "grid --metric vmaf runs"
+	else
+		fail "grid --metric vmaf runs"; cat "$WORK/vmaf.log"
+	fi
+	v=$(sed -n 's/.*whole video vmaf mean \([0-9.]*\),.*/\1/p' "$WORK/vmaf.log")
+	check "the result meets vmaf 90 over the whole video, within 1 ($v)" awk -v m="$v" 'BEGIN { exit !(m >= 89) }'
+else
+	echo "skip --metric vmaf: this ffmpeg has no libvmaf"
+fi
+
 # --- usage errors exit 2, runtime failures 1 ---
 set +e
 $TESSERA grid "$WORK/a.mp4" > /dev/null 2>&1; code=$?

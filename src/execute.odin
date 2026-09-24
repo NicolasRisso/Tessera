@@ -20,6 +20,12 @@ execute_job :: proc(job: ^Job) -> int {
 			return EXIT_RUNTIME
 		}
 	}
+	if job.encode.metric == .VMAF {
+		if err := require_vmaf(&tools); err != nil {
+			errorf("%s", err.?)
+			return EXIT_RUNTIME
+		}
+	}
 	te: Text_Engine
 	if ferr := load_font(&te, job.font_path); ferr != nil {
 		errorf("%s", ferr.?)
@@ -109,15 +115,16 @@ encode_searched :: proc(r: ^Resolved, q: Preset_Quality, tmp: string, w: ^Worker
 
 	s := Search{r = r, master = master, probe = mp, tmp = tmp, workers = w}
 	s.windows = plan_windows(mp.frames, r.fps)
-	t := target_for(q)
-	fmt.printf("search: %s (ssim mean ≥ %.3f, every frame ≥ %.3f) on %d window(s) of %d frames\n",
-		quality_string(job.encode.quality), t.mean, t.min, len(s.windows), s.windows[0].frames)
+	metric := job.encode.metric
+	t := target_for(q, metric)
+	fmt.printf("search: %s (%s) on %d window(s) of %d frames\n",
+		quality_string(job.encode.quality), target_string(metric, t), len(s.windows), s.windows[0].frames)
 	choice := choose_crf(&s, q, job.encode) or_return
 	if choice.note != "" {
 		fmt.printf("note: %s\n", choice.note)
 	}
 	c := choice.candidate
-	fmt.printf("crf %d (ssim mean %.4f, min %.4f) → %s\n", c.crf, c.mean, c.min, size_string(c.est_mb))
+	fmt.printf("crf %d (%s) → %s\n", c.crf, score_string(metric, c.mean, c.min), size_string(c.est_mb))
 
 	crf := choice.crf
 	final_start := time.tick_now()
@@ -132,7 +139,7 @@ encode_searched :: proc(r: ^Resolved, q: Preset_Quality, tmp: string, w: ^Worker
 		}
 		// The estimate undershot: one CRF up, if the floor allows it.
 		next := evaluate(&s, crf + 1) or_return
-		if !meets(next, target_for(.Small)) && !job.encode.force {
+		if !meets(next, target_for(.Small, metric)) && !job.encode.force {
 			return fmt.aprintf("%s came out at %s, over the %s cap, and crf %d would drop below the small floor; raise --max-size or pass --force", job.output, size_string(mb), size_string(cap), crf + 1)
 		}
 		fmt.printf("note: %s is over the %s cap; encoding again at crf %d\n", size_string(mb), size_string(cap), crf + 1)
@@ -142,11 +149,11 @@ encode_searched :: proc(r: ^Resolved, q: Preset_Quality, tmp: string, w: ^Worker
 
 	// The whole result against the whole master.
 	op := probe(r.tools, job.output) or_return
-	res := ssim_compare(r.tools, mp, 0, op, 0, 0, w, tmp) or_return
+	res := score(r, mp, 0, op, 0, w, tmp) or_return
 	defer ssim_result_delete(&res)
-	fmt.printf("%s: %dx%d, %d/%d fps, %s crf %d → %s; whole video ssim mean %.4f, min %.4f (%d frames); encode %.1f s\n",
+	fmt.printf("%s: %dx%d, %d/%d fps, %s crf %d → %s; whole video %s (%d frames); encode %.1f s\n",
 		job.output, r.w, r.h, r.fps.num, r.fps.den, codec_name(job.encode.codec), crf, size_string(file_mb(job.output)),
-		res.mean, res.min, len(res.frames), encode_secs)
+		score_string(metric, res.mean, res.min), len(res.frames), encode_secs)
 
 	if job.encode.keep_master {
 		kept := fmt.aprintf("%s.master.mkv", strings.trim_suffix(job.output, filepath_ext(job.output)))
