@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:math"
 import "core:os"
 import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import "core:time"
 
@@ -195,7 +196,7 @@ Candidate :: struct {
 	crf:       int,
 	mean, min: f64, // the metric over every sampled frame
 	bytes:     i64, // the windows' total
-	est_mb:    f64, // the whole video, from the windows' bitrate
+	est_mb:    f64, // the whole video, from the windows' packets (estimate_bytes)
 	seconds:   f64, // wall time to encode the windows
 }
 
@@ -233,19 +234,24 @@ evaluate :: proc(s: ^Search, crf: int) -> (c: Candidate, err: Err) {
 	c.seconds = time.duration_seconds(time.tick_since(started))
 	all: SSIM_Result
 	defer ssim_result_delete(&all)
-	total_frames := 0
+	packets: Packet_Stats
 	for w, i in s.windows {
 		p := probe(s.r.tools, paths[i]) or_return
 		res := score(s.r, s.probe, w.start, p, w.frames, s.workers, s.tmp) or_return
 		append(&all.frames, ..res.frames[:])
 		ssim_result_delete(&res)
 		c.bytes += file_bytes(paths[i])
-		total_frames += w.frames
+		ps := packet_stats(s.r.tools, paths[i]) or_return
+		packets.key_bytes += ps.key_bytes
+		packets.keys += ps.keys
+		packets.other_bytes += ps.other_bytes
+		packets.others += ps.others
 		os.remove(paths[i])
 	}
 	ssim_summarise(&all)
 	c.mean, c.min = all.mean, all.min
-	c.est_mb = f64(c.bytes) * f64(s.probe.frames) / f64(max(total_frames, 1)) / 1e6
+	keyint := file_keyint(s.r.job.encode, s.r.fps)
+	c.est_mb = estimate_bytes(packets, len(s.windows), s.probe.frames, keyint) / 1e6
 	s.tried[crf] = c
 	fmt.printf("  crf %2d: %s, ≈ %s (%.0f s)\n", crf, score_string(s.r.job.encode.metric, c.mean, c.min), size_string(c.est_mb), c.seconds)
 	return c, nil
@@ -292,10 +298,85 @@ smallest_fitting :: proc(s: ^Search, lo, hi: int, cap_mb: f64) -> (crf: int, fou
 	return lo, true, nil
 }
 
+// Packet_Stats splits an encode's video bytes into keyframes and the rest.
+Packet_Stats :: struct {
+	key_bytes, other_bytes: i64,
+	keys, others:           int,
+}
+
+packet_stats :: proc(tools: Tools, path: string) -> (ps: Packet_Stats, err: Err) {
+	out := capture({tools.ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=size,flags", "-of", "csv=p=0", path}) or_return
+	defer delete(out)
+	it := out
+	for line in strings.split_lines_iterator(&it) {
+		comma := strings.index_byte(line, ',')
+		if comma < 0 {
+			continue
+		}
+		size, ok := strconv.parse_i64(line[:comma])
+		if !ok {
+			continue
+		}
+		if strings.contains_rune(line[comma + 1:], 'K') {
+			ps.key_bytes += size
+			ps.keys += 1
+		} else {
+			ps.other_bytes += size
+			ps.others += 1
+		}
+	}
+	return ps, nil
+}
+
+// file_keyint is the keyframe interval the whole file will have, in frames
+// (0: none but the first): an explicit -g, else the codec's default as
+// ffmpeg drives it (ours for x264, x265's 250, one for libaom).
+file_keyint :: proc(e: Encode_Settings, fps: Rational) -> int {
+	for i := 0; i + 1 < len(e.options); i += 2 {
+		if e.options[i] == "-g" {
+			if g, ok := strconv.parse_int(e.options[i + 1]); ok {
+				return max(g, 0)
+			}
+		}
+	}
+	switch e.codec {
+	case .H264:
+		return max(int(rational_f64(fps) * H264_KEYINT_SECONDS + 0.5), 1)
+	case .HEVC:
+		return 250
+	case .AV1:
+		return 0
+	}
+	return 250
+}
+
+// estimate_bytes turns the windows' packets into the whole file's size.
+// Every window starts on a keyframe the file will mostly not have, so the
+// bytes are counted apart: keyframes as the file will place them (its
+// interval, plus the windows' own scene cuts at their rate), everything
+// else at the windows' rate per frame.
+estimate_bytes :: proc(ps: Packet_Stats, windows, total_frames: int, keyint: int) -> f64 {
+	frames := ps.keys + ps.others
+	if frames == 0 {
+		return 0
+	}
+	key_size := f64(ps.key_bytes) / f64(max(ps.keys, 1))
+	other_size := f64(ps.other_bytes) / f64(max(ps.others, 1))
+	cuts := f64(max(ps.keys - windows, 0)) / f64(frames) // scene cuts per frame
+	keys := 1 + cuts * f64(total_frames)
+	if keyint > 0 {
+		keys += f64((total_frames - 1) / keyint)
+	}
+	keys = min(keys, f64(total_frames))
+	return key_size * keys + other_size * (f64(total_frames) - keys)
+}
+
 Choice :: struct {
 	crf:       int,
 	candidate: Candidate,
 	note:      string, // why, when it is not simply the search's answer
+	hold:      Target, // what the whole file must meet: the target, or the floor under a cap
+	forced:    bool, // --force took it below the floor: nothing to hold
 }
 
 // choose_crf runs the search and applies the size cap. A cap that cannot be
@@ -309,6 +390,7 @@ choose_crf :: proc(s: ^Search, q: Preset_Quality, e: Encode_Settings) -> (ch: Ch
 	}
 	ch.crf = crf
 	ch.candidate = s.tried[crf]
+	ch.hold = t
 	if e.max_size_mb <= 0 || ch.candidate.est_mb <= e.max_size_mb {
 		return ch, nil
 	}
@@ -318,6 +400,7 @@ choose_crf :: proc(s: ^Search, q: Preset_Quality, e: Encode_Settings) -> (ch: Ch
 	fc := s.tried[fit]
 	if fits && meets(fc, floor) {
 		ch.crf, ch.candidate = fit, fc
+		ch.hold = floor
 		ch.note = fmt.aprintf("raised from crf %d to fit %s", crf, size_string(e.max_size_mb))
 		return ch, nil
 	}
@@ -330,6 +413,7 @@ choose_crf :: proc(s: ^Search, q: Preset_Quality, e: Encode_Settings) -> (ch: Ch
 		)
 	}
 	ch.crf, ch.candidate = fit, fc
+	ch.forced = true
 	ch.note = fmt.aprintf("forced to crf %d to fit %s, below the small floor", fit, size_string(e.max_size_mb))
 	return ch, nil
 }

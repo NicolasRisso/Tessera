@@ -126,34 +126,7 @@ encode_searched :: proc(r: ^Resolved, q: Preset_Quality, tmp: string, w: ^Worker
 	c := choice.candidate
 	fmt.printf("crf %d (%s) → %s\n", c.crf, score_string(metric, c.mean, c.min), size_string(c.est_mb))
 
-	crf := choice.crf
-	final_start := time.tick_now()
-	for attempt := 0; ; attempt += 1 {
-		final := run_child(transcode_command(r, master, 0, 0, crf, job.output, context.temp_allocator), tmp_file(tmp, "final.log")) or_return
-		finish_child(&final) or_return
-		mb := file_mb(job.output)
-		cap := job.encode.max_size_mb
-		_, _, top := crf_range(job.encode.codec)
-		if cap <= 0 || mb <= cap || attempt == 3 || crf >= top {
-			break
-		}
-		// The estimate undershot: one CRF up, if the floor allows it.
-		next := evaluate(&s, crf + 1) or_return
-		if !meets(next, target_for(.Small, metric)) && !job.encode.force {
-			return fmt.aprintf("%s came out at %s, over the %s cap, and crf %d would drop below the small floor; raise --max-size or pass --force", job.output, size_string(mb), size_string(cap), crf + 1)
-		}
-		fmt.printf("note: %s is over the %s cap; encoding again at crf %d\n", size_string(mb), size_string(cap), crf + 1)
-		crf += 1
-	}
-	encode_secs := time.duration_seconds(time.tick_since(final_start))
-
-	// The whole result against the whole master.
-	op := probe(r.tools, job.output) or_return
-	res := score(r, mp, 0, op, 0, w, tmp) or_return
-	defer ssim_result_delete(&res)
-	fmt.printf("%s: %dx%d, %d/%d fps, %s crf %d → %s; whole video %s (%d frames); encode %.1f s\n",
-		job.output, r.w, r.h, r.fps.num, r.fps.den, codec_name(job.encode.codec), crf, size_string(file_mb(job.output)),
-		score_string(metric, res.mean, res.min), len(res.frames), encode_secs)
+	encode_final(r, &s, choice, tmp) or_return
 
 	if job.encode.keep_master {
 		kept := fmt.aprintf("%s.master.mkv", strings.trim_suffix(job.output, filepath_ext(job.output)))
@@ -176,6 +149,66 @@ filepath_ext :: proc(p: string) -> string {
 		return ""
 	}
 	return p[i:]
+}
+
+// encode_final encodes the master at the chosen CRF and holds the whole
+// file to what the windows promised. The windows are a sample: a file
+// over the size cap goes one CRF up (if the floor allows), and a file
+// whose whole score misses the target goes one CRF down (unless that CRF
+// was already over the cap). Each step is a full encode and a full score.
+encode_final :: proc(r: ^Resolved, s: ^Search, choice: Choice, tmp: string) -> Err {
+	job := r.job
+	metric := job.encode.metric
+	cap := job.encode.max_size_mb
+	lo, _, top := crf_range(job.encode.codec)
+	over_cap := make(map[int]bool, context.temp_allocator)
+	missed := make(map[int]bool, context.temp_allocator)
+	crf := choice.crf
+	mp := s.probe
+	for attempt := 0; ; attempt += 1 {
+		started := time.tick_now()
+		final := run_child(transcode_command(r, s.master, 0, 0, crf, job.output, context.temp_allocator), tmp_file(tmp, "final.log")) or_return
+		finish_child(&final) or_return
+		encode_secs := time.duration_seconds(time.tick_since(started))
+		mb := file_mb(job.output)
+		at_top := crf >= top || attempt >= 5 || missed[crf + 1]
+		if cap > 0 && mb > cap && at_top && job.encode.force {
+			fmt.printf("note: %s is over the %s cap even at crf %d; kept, as --force asks\n", size_string(mb), size_string(cap), crf)
+		} else if cap > 0 && mb > cap {
+			over_cap[crf] = true
+			if at_top {
+				return fmt.aprintf("%s came out at %s, over the %s cap, at crf %d; raise --max-size", job.output, size_string(mb), size_string(cap), crf)
+			}
+			// The estimate undershot: one CRF up, if the floor allows it.
+			next := evaluate(s, crf + 1) or_return
+			if !meets(next, target_for(.Small, metric)) && !job.encode.force {
+				return fmt.aprintf("%s came out at %s, over the %s cap, and crf %d would drop below the small floor; raise --max-size or pass --force", job.output, size_string(mb), size_string(cap), crf + 1)
+			}
+			fmt.printf("note: %s is over the %s cap; encoding again at crf %d\n", size_string(mb), size_string(cap), crf + 1)
+			crf += 1
+			continue
+		}
+
+		// The whole result against the whole master.
+		op := probe(r.tools, job.output) or_return
+		res := score(r, mp, 0, op, 0, s.workers, tmp) or_return
+		defer ssim_result_delete(&res)
+		fmt.printf("%s: %dx%d, %d/%d fps, %s crf %d → %s; whole video %s (%d frames); encode %.1f s\n",
+			job.output, r.w, r.h, r.fps.num, r.fps.den, codec_name(job.encode.codec), crf, size_string(mb),
+			score_string(metric, res.mean, res.min), len(res.frames), encode_secs)
+		whole := Candidate{mean = res.mean, min = res.min}
+		if choice.forced || meets(whole, choice.hold) {
+			return nil
+		}
+		missed[crf] = true
+		if crf <= lo || over_cap[crf - 1] || attempt >= 5 {
+			fmt.printf("note: the whole video misses the target (%s)%s\n", target_string(metric, choice.hold),
+				"; one crf lower was over the size cap" if over_cap[crf - 1] else "")
+			return nil
+		}
+		fmt.printf("note: the whole video misses the target its windows met (%s); encoding again at crf %d\n", target_string(metric, choice.hold), crf - 1)
+		crf -= 1
+	}
 }
 
 // file_mb is a file's size in megabytes (10^6 bytes), 0 if it is missing.

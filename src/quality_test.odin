@@ -36,3 +36,36 @@ test_targets_are_ordered :: proc(t: ^testing.T) {
 	testing.expect(t, meets(Candidate{mean = 0.991, min = 0.981}, vl))
 	testing.expect(t, !meets(Candidate{mean = 0.995, min = 0.979}, vl))
 }
+
+@(test)
+test_estimate_counts_the_files_keyframes :: proc(t: ^testing.T) {
+	// Six 120-frame windows, each a 100 kB keyframe and 119 frames of 10 kB.
+	ps := Packet_Stats{key_bytes = 6 * 100_000, keys = 6, other_bytes = 6 * 119 * 10_000, others = 6 * 119}
+	// A 2400-frame file with a keyframe every 600 frames has 4 of them.
+	got := estimate_bytes(ps, 6, 2400, 600)
+	want := 4.0 * 100_000 + 2396.0 * 10_000
+	testing.expectf(t, abs(got - want) < 1, "estimate %v, want %v", got, want)
+	// One keyframe only (libaom through ffmpeg).
+	got = estimate_bytes(ps, 6, 2400, 0)
+	testing.expectf(t, abs(got - (100_000 + 2399.0 * 10_000)) < 1, "no interval: %v", got)
+	// Scene cuts inside the windows count at their rate: two extra
+	// keyframes in 720 window frames are 2400 × 2/720 ≈ 6.7 in the file.
+	cut := Packet_Stats{key_bytes = 8 * 100_000, keys = 8, other_bytes = 712 * 10_000, others = 712}
+	got = estimate_bytes(cut, 6, 2400, 600)
+	keys := 4 + 2400.0 * 2 / 720
+	testing.expectf(t, abs(got - (keys * 100_000 + (2400 - keys) * 10_000)) < 1, "with cuts: %v", got)
+}
+
+@(test)
+test_file_keyint :: proc(t: ^testing.T) {
+	e := default_encode()
+	testing.expect_value(t, file_keyint(e, {60, 1}), 600)
+	testing.expect_value(t, file_keyint(e, {30000, 1001}), 300)
+	e.codec = .HEVC
+	testing.expect_value(t, file_keyint(e, {60, 1}), 250)
+	e.codec = .AV1
+	testing.expect_value(t, file_keyint(e, {60, 1}), 0)
+	testing.expect(t, add_encoder_option(&e, "g=120"))
+	testing.expect_value(t, file_keyint(e, {60, 1}), 120)
+	delete(e.options)
+}
